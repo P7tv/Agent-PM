@@ -6,6 +6,7 @@ from app.services.state_store import StateStore
 from app.services.project_manager import ProjectManager
 from app.services.agent_runner import AgentRunner
 from app.services.orchestrator import Orchestrator
+from app.services.tech_lead_service import TechLeadService
 from app.api.websocket_hub import hub
 
 router = APIRouter(prefix="/api")
@@ -16,12 +17,16 @@ store = StateStore(db_path=db_path)
 pm = ProjectManager(store=store)
 runner = AgentRunner(use_mock=False)
 orchestrator = Orchestrator(store=store, project_manager=pm, agent_runner=runner)
+tech_lead_svc = TechLeadService(store=store, pm=pm)
 
 class CreateProjectRequest(BaseModel):
     project_id: str
     name: str
     workspace_path: str
     auto_pilot: bool = False
+
+class LeadChatRequest(BaseModel):
+    message: str
 
 class DirectiveRequest(BaseModel):
     directive: str
@@ -93,6 +98,8 @@ def get_project_approvals(project_id: str):
 @router.post("/projects/{project_id}/approvals/{request_id}")
 async def resolve_approval(project_id: str, request_id: str, req: ApprovalDecisionRequest):
     store.resolve_approval(request_id, req.decision)
+    # Signal the orchestrator to unblock the pipeline
+    orchestrator.resolve_gate(request_id, req.decision)
     await hub.broadcast("DECISION_GATE_RESOLVED", {
         "project_id": project_id,
         "request_id": request_id,
@@ -140,3 +147,18 @@ async def send_directive(project_id: str, req: DirectiveRequest, bg: BackgroundT
         
     bg.add_task(run_pipeline)
     return {"status": "QUEUED", "project_id": project_id, "directive": req.directive}
+
+@router.post("/projects/{project_id}/standup")
+def get_standup(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return tech_lead_svc.generate_standup(project_id)
+
+@router.post("/projects/{project_id}/lead/chat")
+def chat_with_lead(project_id: str, req: LeadChatRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return tech_lead_svc.chat_with_lead(project_id, req.message)
+
