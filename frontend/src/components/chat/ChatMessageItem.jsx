@@ -69,6 +69,63 @@ export function ChatMessageItem({ msg, onApply }) {
                     {children}
                   </code>
                 )
+              },
+              blockquote: ({node, children, ...props}) => {
+                // Extract text to check for GitHub alerts
+                const textContent = node.children?.[0]?.children?.[0]?.value || '';
+                const match = textContent.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
+                
+                if (match) {
+                  const type = match[1].toUpperCase();
+                  const colors = {
+                    NOTE: { bg: 'rgba(59, 130, 246, 0.1)', border: '#3b82f6', text: '#60a5fa', icon: 'ℹ️' },
+                    TIP: { bg: 'rgba(16, 185, 129, 0.1)', border: '#10b981', text: '#34d399', icon: '💡' },
+                    IMPORTANT: { bg: 'rgba(139, 92, 246, 0.1)', border: '#8b5cf6', text: '#a78bfa', icon: '✨' },
+                    WARNING: { bg: 'rgba(245, 158, 11, 0.1)', border: '#f59e0b', text: '#fbbf24', icon: '⚠️' },
+                    CAUTION: { bg: 'rgba(239, 68, 68, 0.1)', border: '#ef4444', text: '#f87171', icon: '🛑' }
+                  };
+                  const style = colors[type];
+                  
+                  return (
+                    <blockquote style={{
+                      margin: '16px 0', padding: '12px 16px', 
+                      background: style.bg, borderLeft: `4px solid ${style.border}`,
+                      borderRadius: '0 8px 8px 0'
+                    }} {...props}>
+                      <div style={{ fontWeight: 'bold', color: style.text, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {style.icon} {type.charAt(0) + type.slice(1).toLowerCase()}
+                      </div>
+                      {/* Strip the [!TYPE] tag from the rendered children */}
+                      <div style={{ opacity: 0.9 }}>
+                        {React.Children.map(children, child => {
+                          if (React.isValidElement(child) && child.props.children) {
+                            const childContent = child.props.children;
+                            if (typeof childContent === 'string' && childContent.startsWith(`[!${type}]`)) {
+                              return React.cloneElement(child, {}, childContent.replace(`[!${type}]`, '').trimStart());
+                            }
+                            if (Array.isArray(childContent) && typeof childContent[0] === 'string' && childContent[0].startsWith(`[!${type}]`)) {
+                              const newChildren = [...childContent];
+                              newChildren[0] = newChildren[0].replace(`[!${type}]`, '').trimStart();
+                              return React.cloneElement(child, {}, newChildren);
+                            }
+                          }
+                          return child;
+                        })}
+                      </div>
+                    </blockquote>
+                  );
+                }
+                
+                // Regular blockquote
+                return (
+                  <blockquote style={{
+                    margin: '16px 0', padding: '10px 16px',
+                    background: 'var(--bg-surface)', borderLeft: '3px solid var(--border-medium)',
+                    color: 'var(--text-muted)', fontStyle: 'italic'
+                  }} {...props}>
+                    {children}
+                  </blockquote>
+                );
               }
             }}
           >
