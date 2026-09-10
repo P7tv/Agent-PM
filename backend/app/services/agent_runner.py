@@ -8,8 +8,8 @@ try:
     HAS_ANTIGRAVITY = True
 except ImportError:
     HAS_ANTIGRAVITY = False
-
 ROLE_PROMPTS = {
+    "TechLead": "You are the project tech lead. Coordinate tasks, resolve architectural blockers, track progress, and report clearly to the PM.",
     "Architect": "You are a software architect. Break down high-level requirements into clear, isolated tasks.",
     "Designer": "You are a UI/UX designer. Create CSS design tokens, layouts, and component structures.",
     "FrontendDev": "You are a senior frontend engineer. Implement UI components and client logic.",
@@ -29,6 +29,7 @@ class AgentRunner:
         role: str,
         prompt: str,
         workspace_path: str,
+        project_context: Optional[Dict[str, Any]] = None,
         event_callback: Optional[Callable[[str, Dict[str, Any]], Coroutine[Any, Any, None]]] = None
     ) -> Dict[str, Any]:
         
@@ -65,10 +66,30 @@ class AgentRunner:
                 "response": f"Completed tasks for: {prompt}"
             }
 
-        # Live Antigravity Python SDK Execution
-        system_instruction = ROLE_PROMPTS.get(role, "You are a helpful software engineering agent.")
+        # Live Antigravity Python SDK Execution with Deep Project Context
+        base_instruction = ROLE_PROMPTS.get(role, "You are a helpful software engineering agent.")
+        if project_context:
+            proj_name = project_context.get("suggested_name") or project_id
+            purpose = project_context.get("purpose_summary", "")
+            stack = project_context.get("stack_type", "")
+            frameworks = ", ".join(project_context.get("frameworks", []))
+            test_cmd = project_context.get("test_command", "")
+            dirs = ", ".join(project_context.get("directory_structure", [])[:6])
+
+            ctx_header = (
+                f"Project: {proj_name}\n"
+                f"Workspace Root: {workspace_path}\n"
+                f"Project Purpose: {purpose}\n"
+                f"Stack & Frameworks: {stack} ({frameworks})\n"
+                f"Test Command: {test_cmd}\n"
+                f"Key Directories: {dirs}\n"
+            )
+            system_instruction = f"{ctx_header}\n{base_instruction}\nAlways operate strictly within {workspace_path}."
+        else:
+            system_instruction = f"{base_instruction} Always operate strictly within {workspace_path}."
+
         config = LocalAgentConfig(
-            system_instructions=f"{system_instruction} Always operate strictly within {workspace_path}.",
+            system_instructions=system_instruction,
             capabilities=CapabilitiesConfig()
         )
         
