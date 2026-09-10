@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 import yaml
+import urllib.request
 
 @dataclass
 class SkillInfo:
@@ -274,3 +275,117 @@ class SkillManager:
             f.write(content)
         
         return target_file
+
+    @staticmethod
+    def normalize_download_url(url: str) -> str:
+        """
+        Normalizes GitHub blob URLs to raw usercontent URLs.
+        e.g. https://github.com/user/repo/blob/main/skills/foo/SKILL.md
+        -> https://raw.githubusercontent.com/user/repo/main/skills/foo/SKILL.md
+        """
+        clean_url = url.strip()
+        github_blob_pattern = r"^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$"
+        match = re.match(github_blob_pattern, clean_url)
+        if match:
+            owner, repo, branch, path = match.groups()
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+        return clean_url
+
+    def download_online_skill(
+        self,
+        url: str,
+        skill_name: Optional[str] = None,
+        target: str = "project",
+        project_path: Optional[str] = None
+    ) -> SkillInfo:
+        """
+        Downloads a remote markdown skill from GitHub or web URL,
+        validates frontmatter and size (<512KB), and saves it to either
+        the project's .agents/skills/ directory or the stock skills directory.
+        """
+        raw_url = self.normalize_download_url(url)
+        if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+            raise ValueError(f"Invalid URL schema: {url}. Must start with http:// or https://")
+
+        req = urllib.request.Request(
+            raw_url,
+            headers={"User-Agent": "My-PM-Agent-Downloader/1.0"}
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                status_code = resp.getcode() if hasattr(resp, "getcode") and callable(resp.getcode) else getattr(resp, "status", 200)
+                if isinstance(status_code, int) and status_code != 200:
+                    raise ValueError(f"Failed to fetch skill from {raw_url}, HTTP {status_code}")
+                
+                # Check Content-Length if present
+                content_len = resp.headers.get("Content-Length")
+                if content_len and int(content_len) > 512 * 1024:
+                    raise ValueError("Skill file size exceeds maximum limit of 512 KB")
+
+                raw_bytes = resp.read()
+                if len(raw_bytes) > 512 * 1024:
+                    raise ValueError("Skill file size exceeds maximum limit of 512 KB")
+
+                content = raw_bytes.decode("utf-8", errors="replace")
+        except Exception as e:
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"Network error fetching skill: {e}")
+
+        # Parse or infer skill name
+        inferred_name = skill_name
+        if not inferred_name:
+            # Try to parse from frontmatter
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    try:
+                        fm = yaml.safe_load(parts[1]) or {}
+                        inferred_name = fm.get("name")
+                    except Exception:
+                        pass
+        
+        if not inferred_name:
+            # Fallback to last segment of URL
+            filename = raw_url.rstrip("/").split("/")[-1]
+            if filename.lower().endswith(".md"):
+                segments = raw_url.rstrip("/").split("/")
+                if len(segments) >= 2 and segments[-1].upper() == "SKILL.MD":
+                    inferred_name = segments[-2]
+                else:
+                    inferred_name = filename[:-3]
+            else:
+                inferred_name = filename
+
+        clean_name = self._normalize_role(inferred_name or "custom-skill")
+
+        # Determine target directory
+        if target == "project":
+            if not project_path:
+                raise ValueError("project_path is required when target is 'project'")
+            target_dir = os.path.join(project_path, ".agents", "skills", clean_name)
+            tier = "project"
+        elif target == "agy":
+            target_dir = os.path.join(self.agy_skills_dir, clean_name)
+            tier = "agy"
+        else:  # stock
+            target_dir = os.path.join(self.stock_skills_dir, clean_name)
+            tier = "stock"
+
+        os.makedirs(target_dir, exist_ok=True)
+        target_file = os.path.join(target_dir, "SKILL.md")
+
+        # Ensure minimal frontmatter if completely absent
+        if not content.strip().startswith("---"):
+            title = clean_name.replace("-", " ").title()
+            content = f"---\nname: {clean_name}\ntitle: {title}\ndescription: Custom imported skill for {title}\ntier: {tier}\n---\n\n" + content
+
+        with open(target_file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        parsed = self._parse_skill_file(target_file, default_tier=tier)
+        if not parsed:
+            raise ValueError(f"Failed to parse downloaded skill from {target_file}")
+        
+        return parsed
