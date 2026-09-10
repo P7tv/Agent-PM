@@ -64,12 +64,52 @@ class WorkspaceInspector:
             "stack_type": "Generic Project",
             "frameworks": [],
             "test_runner": None,
+            "test_command": None,
             "has_git": os.path.exists(os.path.join(path, ".git")),
+            "has_docker": False,
+            "purpose_summary": "",
+            "directory_structure": [],
             "file_count": 0,
             "summary": ""
         }
 
-        # Check Node.js / JavaScript
+        # 1. Parse README for Purpose Summary
+        for r_name in ["README.md", "readme.md", "README", "README.txt", "readme.markdown"]:
+            r_path = os.path.join(path, r_name)
+            if os.path.exists(r_path):
+                try:
+                    with open(r_path, "r", encoding="utf-8", errors="ignore") as f:
+                        raw_readme = f.read(3000)
+                        lines = [l.strip() for l in raw_readme.split("\n") if l.strip()]
+                        # Extract first header and first non-header description
+                        title = ""
+                        desc = ""
+                        for line in lines:
+                            if line.startswith("#") and not title:
+                                title = line.lstrip("#").strip()
+                            elif not line.startswith("#") and not line.startswith("!") and not desc:
+                                desc = line.strip()
+                        if title and desc:
+                            meta["purpose_summary"] = f"{title}: {desc}"
+                        elif title:
+                            meta["purpose_summary"] = title
+                        elif desc:
+                            meta["purpose_summary"] = desc
+                        else:
+                            meta["purpose_summary"] = lines[0] if lines else ""
+                        break
+                except Exception:
+                    pass
+
+        # 2. Check Docker
+        if (
+            os.path.exists(os.path.join(path, "Dockerfile"))
+            or os.path.exists(os.path.join(path, "docker-compose.yml"))
+            or os.path.exists(os.path.join(path, "docker-compose.yaml"))
+        ):
+            meta["has_docker"] = True
+
+        # 3. Check Node.js / JavaScript
         pkg_json_path = os.path.join(path, "package.json")
         if os.path.exists(pkg_json_path):
             meta["stack_type"] = "Node.js"
@@ -78,6 +118,11 @@ class WorkspaceInspector:
                     pkg_data = json.load(f)
                     if "name" in pkg_data and pkg_data["name"]:
                         meta["suggested_name"] = pkg_data["name"]
+                    
+                    # Test commands from package scripts
+                    scripts = pkg_data.get("scripts", {})
+                    if "test" in scripts and scripts["test"]:
+                        meta["test_command"] = scripts["test"]
                     
                     deps = {**pkg_data.get("dependencies", {}), **pkg_data.get("devDependencies", {})}
                     for framework in ["react", "next", "vue", "nuxt", "svelte", "express", "fastify", "tailwind", "vite"]:
@@ -89,12 +134,15 @@ class WorkspaceInspector:
                     elif "vue" in meta["frameworks"]:
                         meta["stack_type"] = "Node.js / Vue"
                         
-                    if "jest" in deps or "vitest" in deps:
-                        meta["test_runner"] = "vitest" if "vitest" in deps else "jest"
+                    test_script = scripts.get("test", "").lower()
+                    if "vitest" in deps or "vitest" in test_script:
+                        meta["test_runner"] = "vitest"
+                    elif "jest" in deps or "jest" in test_script:
+                        meta["test_runner"] = "jest"
             except Exception:
                 pass
 
-        # Check Python
+        # 4. Check Python
         reqs_path = os.path.join(path, "requirements.txt")
         pyproject_path = os.path.join(path, "pyproject.toml")
         if os.path.exists(reqs_path) or os.path.exists(pyproject_path):
@@ -118,16 +166,38 @@ class WorkspaceInspector:
                     meta["frameworks"].append(py_framework)
             if "pytest" in content:
                 meta["test_runner"] = "pytest"
+                meta["test_command"] = "pytest tests/ -v"
+
+        # 5. Scan Directory Topology (depth <= 2)
+        dirs_found = []
+        try:
+            for root, dirs, files in os.walk(path):
+                rel_root = os.path.relpath(root, path)
+                # Filter out ignore folders
+                dirs[:] = [d for d in dirs if d not in [".git", "node_modules", ".venv", "__pycache__", "dist", "build", ".next", ".cache"]]
+                if rel_root != ".":
+                    parts = rel_root.split(os.sep)
+                    if len(parts) <= 2:
+                        dirs_found.append(rel_root.replace(os.sep, "/") + "/")
+                if len(dirs_found) >= 20:
+                    break
+        except Exception:
+            pass
+        meta["directory_structure"] = dirs_found
 
         # Count visible files (max 200 for fast responsiveness)
         count = 0
         for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if d not in [".git", "node_modules", ".venv", "__pycache__", "dist", "build"]]
+            dirs[:] = [d for d in dirs if d not in [".git", "node_modules", ".venv", "__pycache__", "dist", "build", ".next", ".cache"]]
             count += len(files)
             if count > 200:
                 break
         meta["file_count"] = count
-        meta["summary"] = f"Detected {meta['stack_type']} codebase with ~{count} active files."
+
+        if not meta["purpose_summary"]:
+            meta["purpose_summary"] = f"{meta['stack_type']} project with {len(dirs_found)} directories and ~{count} active files."
+
+        meta["summary"] = f"{meta['purpose_summary']} (Stack: {meta['stack_type']}, Tests: {meta.get('test_runner') or 'none'})"
 
         return meta
 
@@ -145,6 +215,11 @@ class WorkspaceInspector:
                     "role": "Architect",
                     "title": "Lead Software Architect",
                     "description": f"Decomposes requirements for {stack} application into modular components and state stores."
+                },
+                {
+                    "role": "Designer",
+                    "title": "UI/UX Designer",
+                    "description": "Creates design tokens, color palettes, responsive layouts, and component specifications."
                 },
                 {
                     "role": "FrontendDev",
@@ -180,6 +255,11 @@ class WorkspaceInspector:
                     "description": "Plans data models, Pydantic schemas, dependency structures, and service boundaries."
                 },
                 {
+                    "role": "Designer",
+                    "title": "UI/UX Designer",
+                    "description": "Designs interface layouts, styling tokens, and visual component specifications."
+                },
+                {
                     "role": "BackendDev",
                     "title": "Python Core Engineer",
                     "description": f"Implements Python backend logic, endpoints ({', '.join(frameworks) if frameworks else 'FastAPI/REST'}), and services."
@@ -213,9 +293,14 @@ class WorkspaceInspector:
                     "description": "Analyzes codebase layout and breaks high-level features into discrete tasks."
                 },
                 {
+                    "role": "Designer",
+                    "title": "UI/UX Designer",
+                    "description": "Creates design specifications, color systems, and layout blueprints."
+                },
+                {
                     "role": "FrontendDev",
                     "title": "UI Engineer",
-                    "description": "Designs layouts and user interface components."
+                    "description": "Implements layouts and user interface components."
                 },
                 {
                     "role": "BackendDev",
