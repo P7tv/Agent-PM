@@ -14,6 +14,7 @@ import DualSplitView from './components/DualSplitView';
 import FocusRoomView from './components/FocusRoomView';
 import { DecisionGateModal, WhisperModal } from './components/DecisionGateModal';
 import AddProjectModal from './components/AddProjectModal';
+import TechLeadStandupModal from './components/TechLeadStandupModal';
 
 export default function App() {
   const [theme, setTheme] = useState(() => {
@@ -30,6 +31,7 @@ export default function App() {
 
   const [activeApproval, setActiveApproval] = useState(null);
   const [whisperTarget, setWhisperTarget] = useState(null); // { projectId, role }
+  const [standupProject, setStandupProject] = useState(null); // { projectId, projectName }
   const [isAddProjectOpen, setIsAddProjectOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
 
@@ -306,6 +308,7 @@ export default function App() {
             onFocusProject={handleFocusProject}
             onDeleteProject={handleDeleteProject}
             onOpenAddProject={() => setIsAddProjectOpen(true)}
+            onOpenStandup={(pid, pname) => setStandupProject({ projectId: pid, projectName: pname })}
           />
         )}
 
@@ -316,6 +319,8 @@ export default function App() {
             liveStreamsByProject={liveStreams}
             onDeleteProject={handleDeleteProject}
             onOpenAddProject={() => setIsAddProjectOpen(true)}
+            onDispatchDirective={handleDispatchDirective}
+            onOpenStandup={(pid, pname) => setStandupProject({ projectId: pid, projectName: pname })}
           />
         )}
 
@@ -347,6 +352,13 @@ export default function App() {
         isOpen={isAddProjectOpen}
         onClose={() => setIsAddProjectOpen(false)}
         onAddProject={handleAddProject}
+      />
+
+      <TechLeadStandupModal
+        isOpen={Boolean(standupProject)}
+        onClose={() => setStandupProject(null)}
+        projectId={standupProject?.projectId}
+        projectName={standupProject?.projectName}
       />
     </div>
   );

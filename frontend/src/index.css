@@ -41,6 +41,9 @@
   --shadow-md: 0 4px 12px 0 rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 12px 32px 0 rgba(0, 0, 0, 0.5);
 
+  --accent-coral: #fb7185;
+  --accent-cyan: #22d3ee;
+
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -82,6 +85,9 @@
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 12px 0 rgba(0, 0, 0, 0.07);
   --shadow-lg: 0 10px 25px -3px rgba(0, 0, 0, 0.1);
+
+  --accent-coral: #f43f5e;
+  --accent-cyan: #0891b2;
 }
 
 * {
@@ -449,29 +455,68 @@ body {
   transition: all 0.2s ease;
 }
 
-/* Status States */
+/* Status States — with animated pulse rings per spec */
 .agent-desk-card.THINKING .agent-avatar-box {
   border-color: var(--info);
   color: var(--info-text);
   background: var(--info-subtle);
+  animation: agent-pulse-info 2s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.3);
 }
 
 .agent-desk-card.WORKING .agent-avatar-box {
   border-color: var(--primary);
   color: var(--primary-text);
   background: var(--primary-subtle);
+  animation: agent-pulse-primary 1.5s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.3);
 }
 
 .agent-desk-card.TESTING .agent-avatar-box {
   border-color: var(--warning);
   color: var(--warning-text);
   background: var(--warning-subtle);
+  animation: agent-pulse-warning 1.8s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.3);
 }
 
 .agent-desk-card.DONE .agent-avatar-box {
   border-color: var(--success);
   color: var(--success-text);
   background: var(--success-subtle);
+}
+
+.agent-desk-card.BLOCKED .agent-avatar-box {
+  border-color: var(--accent-coral);
+  color: var(--accent-coral);
+  background: rgba(244, 63, 94, 0.1);
+  animation: agent-pulse-coral 1.2s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.3);
+}
+
+.agent-desk-card.REVIEWING .agent-avatar-box {
+  border-color: var(--info);
+  color: var(--info-text);
+  background: var(--info-subtle);
+  animation: agent-pulse-info 2.5s ease-in-out infinite;
+}
+
+/* Agent Pulse Ring Animations */
+@keyframes agent-pulse-info {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(139, 92, 246, 0); }
+}
+@keyframes agent-pulse-primary {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+}
+@keyframes agent-pulse-warning {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+}
+@keyframes agent-pulse-coral {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(244, 63, 94, 0); }
 }
 
 .agent-role {
@@ -496,6 +541,8 @@ body {
 .status-TESTING { background: var(--warning-subtle); color: var(--warning-text); }
 .status-DONE { background: var(--success-subtle); color: var(--success-text); }
 .status-IDLE { background: var(--bg-surface-hover); color: var(--text-muted); }
+.status-BLOCKED { background: rgba(244, 63, 94, 0.12); color: var(--accent-coral); }
+.status-REVIEWING { background: var(--info-subtle); color: var(--info-text); }
 
 .thought-bubble {
   font-size: 11px;
@@ -708,3 +755,38 @@ body {
 .whisper-textarea:focus {
   border-color: var(--border-focus);
 }
+
+/* Spinner Animation */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Tech Lead Card & Standup Styling */
+.tech-lead-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.tech-lead-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  border-color: var(--border-medium);
+}
+
+.tech-lead-card.THINKING .agent-avatar-box {
+  animation: agent-pulse 1.5s ease-in-out infinite;
+  border-color: #f59e0b;
+}
+
+.tech-lead-card.WORKING .agent-avatar-box {
+  animation: agent-pulse 1s ease-in-out infinite;
+  border-color: #f59e0b;
+}
+
+.tech-lead-card.BLOCKED .agent-avatar-box {
+  animation: agent-pulse 0.8s ease-in-out infinite;
+  border-color: var(--accent-coral);
+}
+

@@ -1,12 +1,14 @@
-import React from 'react';
-import { Layers, Activity, CheckCircle2, Clock, Trash2, FolderPlus } from 'lucide-react';
+import React, { useState } from 'react';
+import { Layers, Activity, CheckCircle2, Clock, Trash2, FolderPlus, Send } from 'lucide-react';
 
 export default function DualSplitView({ 
   projects, 
   tasksByProject, 
   liveStreamsByProject, 
   onDeleteProject,
-  onOpenAddProject 
+  onOpenAddProject,
+  onDispatchDirective,
+  onOpenStandup
 }) {
   return (
     <div className="dual-split-view">
@@ -15,7 +17,7 @@ export default function DualSplitView({
         const stream = liveStreamsByProject[project.project_id] || [];
 
         const todoTasks = tasks.filter((t) => t.status === 'TODO');
-        const inProgressTasks = tasks.filter((t) => t.status === 'IN_PROGRESS' || t.status === 'TESTING');
+        const inProgressTasks = tasks.filter((t) => ['IN_PROGRESS', 'TESTING', 'REVIEW'].includes(t.status));
         const doneTasks = tasks.filter((t) => t.status === 'DONE');
 
         return (
@@ -26,6 +28,14 @@ export default function DualSplitView({
                 <p className="room-workspace">{project.workspace_path}</p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  className="view-btn"
+                  onClick={() => onOpenStandup(project.project_id, project.name)}
+                  style={{ color: '#d97706', borderColor: 'rgba(245, 158, 11, 0.4)', padding: '4px 8px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  title="Daily Standup Briefing"
+                >
+                  <span>👑 Standup</span>
+                </button>
                 <span className="room-tag">
                   {project.auto_pilot ? 'Auto-Pilot' : 'Gate Mode'}
                 </span>
@@ -107,6 +117,11 @@ export default function DualSplitView({
                 )}
               </div>
             </div>
+            {/* Per-Column Directive Input */}
+            <ColumnDirectiveBar
+              projectId={project.project_id}
+              onDispatchDirective={onDispatchDirective}
+            />
           </div>
         );
       })}
@@ -142,5 +157,45 @@ export default function DualSplitView({
         </div>
       )}
     </div>
+  );
+}
+
+function ColumnDirectiveBar({ projectId, onDispatchDirective }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!text.trim() || !onDispatchDirective) return;
+    setSending(true);
+    await onDispatchDirective(projectId, text);
+    setText('');
+    setSending(false);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} style={{
+      display: 'flex', gap: '8px', marginTop: '10px',
+      padding: '8px 10px', background: 'var(--bg-canvas)',
+      borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)'
+    }}>
+      <input
+        type="text"
+        className="pm-input"
+        style={{ fontSize: '12px', flex: 1 }}
+        placeholder="Quick directive for this project..."
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        disabled={sending}
+      />
+      <button
+        type="submit"
+        className="dispatch-btn"
+        style={{ fontSize: '11px', padding: '5px 10px' }}
+        disabled={sending || !text.trim()}
+      >
+        <Send size={12} />
+      </button>
+    </form>
   );
 }

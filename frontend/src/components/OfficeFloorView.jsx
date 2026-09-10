@@ -12,6 +12,7 @@ import {
   Trash2,
   FolderPlus
 } from 'lucide-react';
+import TechLeadCard from './TechLeadCard';
 
 const ROLE_ICONS = {
   Architect: <Compass size={20} />,
@@ -29,12 +30,15 @@ export default function OfficeFloorView({
   onAgentClick, 
   onFocusProject, 
   onDeleteProject,
-  onOpenAddProject 
+  onOpenAddProject,
+  onOpenStandup
 }) {
   return (
     <div className="office-floor">
       {projects.map((project, idx) => {
         const agents = agentStates[project.project_id] || [];
+        const techLead = agents.find((a) => a.role === 'TechLead');
+        const teamAgents = agents.filter((a) => a.role !== 'TechLead');
         const roomTag = idx === 0 ? 'PROJECT 01' : 'PROJECT 02';
 
         return (
@@ -48,6 +52,14 @@ export default function OfficeFloorView({
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  className="view-btn"
+                  onClick={() => onOpenStandup(project.project_id, project.name)}
+                  style={{ color: '#d97706', borderColor: 'rgba(245, 158, 11, 0.4)' }}
+                  title="Daily Standup Briefing"
+                >
+                  <span>👑 Standup</span>
+                </button>
                 <button
                   className="view-btn"
                   onClick={() => onFocusProject(project.project_id)}
@@ -71,8 +83,18 @@ export default function OfficeFloorView({
               </div>
             </div>
 
+            {/* Featured Tech Lead Desk */}
+            {techLead && (
+              <TechLeadCard
+                agent={techLead}
+                onOpenStandup={() => onOpenStandup(project.project_id, project.name)}
+                onOpenWhisper={(role) => onAgentClick(project.project_id, role)}
+              />
+            )}
+
+            {/* Sub-Agents Grid */}
             <div className="agent-desks-grid">
-              {agents.map((agent) => {
+              {teamAgents.map((agent) => {
                 const icon = ROLE_ICONS[agent.role] || <Bot size={20} />;
                 const statusClass = `status-${agent.status}`;
 
