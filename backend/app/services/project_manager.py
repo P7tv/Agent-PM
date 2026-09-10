@@ -13,15 +13,21 @@ DEFAULT_ROLES = [
     AgentRole.DOC_WRITER.value,
 ]
 
+from app.services.workspace_inspector import WorkspaceInspector
+
 class ProjectManager:
     def __init__(self, store: StateStore, max_projects: int = 2):
         self.store = store
         self.max_projects = max_projects
+        self.inspector = WorkspaceInspector()
 
     def register_project(self, project_id: str, name: str, workspace_path: str, auto_pilot: bool = False) -> Project:
-        resolved_path = os.path.abspath(workspace_path)
-        if not os.path.exists(resolved_path):
-            os.makedirs(resolved_path, exist_ok=True)
+        # 1. Guardrail Validation
+        valid, msg, meta = self.inspector.validate_guardrails(workspace_path)
+        if not valid:
+            raise ValueError(f"Guardrail Check Failed: {msg}")
+
+        resolved_path = meta["path"]
             
         existing = self.store.get_project(project_id)
         if not existing:
@@ -29,11 +35,18 @@ class ProjectManager:
             if len(current_projects) >= self.max_projects:
                 raise ValueError(f"Maximum active projects limit ({self.max_projects}) reached.")
         
-        proj = self.store.create_project(project_id, name, resolved_path, auto_pilot)
+        proj_name = name or meta.get("suggested_name") or "Project"
+        proj = self.store.create_project(project_id, proj_name, resolved_path, auto_pilot)
         
-        # Initialize default agent states
-        for role in DEFAULT_ROLES:
-            self.store.set_agent_status(project_id, role, "IDLE", "Ready for PM directives")
+        # 2. Dynamic Subagent Tailoring based on analyzed codebase
+        tailored_agents = self.inspector.generate_tailored_roster(meta)
+        for agent in tailored_agents:
+            self.store.set_agent_status(
+                project_id=project_id,
+                role=agent["role"],
+                status="IDLE",
+                thought=f"Specialized for {meta.get('stack_type')}: {agent['description']}"
+            )
             
         return proj
 

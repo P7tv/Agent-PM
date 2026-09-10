@@ -33,6 +33,18 @@ class WhisperRequest(BaseModel):
     role: str
     message: str
 
+class ValidatePathRequest(BaseModel):
+    path: str
+
+@router.post("/projects/validate-path")
+def validate_path(req: ValidatePathRequest):
+    valid, msg, meta = pm.inspector.validate_guardrails(req.path)
+    return {
+        "valid": valid,
+        "message": msg,
+        "metadata": meta
+    }
+
 @router.get("/projects")
 def get_projects():
     return store.list_projects()
