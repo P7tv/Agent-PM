@@ -54,6 +54,19 @@ class StateStore:
                     PRIMARY KEY (project_id, role)
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE agent_states ADD COLUMN skill_name TEXT DEFAULT NULL")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE agent_states ADD COLUMN skill_tier TEXT DEFAULT 'stock'")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE agent_states ADD COLUMN skill_title TEXT DEFAULT NULL")
+            except sqlite3.OperationalError:
+                pass
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS approvals (
                     request_id TEXT PRIMARY KEY,
@@ -125,33 +138,90 @@ class StateStore:
             cur = conn.execute("SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at FROM tasks WHERE project_id = ? ORDER BY created_at ASC", (project_id,))
             return [TaskItem(task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4], status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7]) for r in cur.fetchall()]
 
-    def set_agent_status(self, project_id: str, role: str, status: str, thought: str = "", current_task_id: Optional[str] = None, last_tool_call: Optional[str] = None):
+    def set_agent_status(
+        self,
+        project_id: str,
+        role: str,
+        status: str,
+        thought: str = "",
+        current_task_id: Optional[str] = None,
+        last_tool_call: Optional[str] = None,
+        skill_name: Optional[str] = None,
+        skill_tier: Optional[str] = "stock",
+        skill_title: Optional[str] = None
+    ):
         now = time.time()
         with self._get_conn() as conn:
             conn.execute("""
-                INSERT INTO agent_states (project_id, role, status, current_task_id, thought, last_tool_call, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO agent_states (project_id, role, status, current_task_id, thought, last_tool_call, skill_name, skill_tier, skill_title, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, role) DO UPDATE SET
                     status=excluded.status,
                     current_task_id=coalesce(excluded.current_task_id, agent_states.current_task_id),
                     thought=excluded.thought,
                     last_tool_call=coalesce(excluded.last_tool_call, agent_states.last_tool_call),
+                    skill_name=coalesce(excluded.skill_name, agent_states.skill_name),
+                    skill_tier=coalesce(excluded.skill_tier, agent_states.skill_tier),
+                    skill_title=coalesce(excluded.skill_title, agent_states.skill_title),
                     updated_at=excluded.updated_at
-            """, (project_id, role, status, current_task_id, thought, last_tool_call, now))
+            """, (project_id, role, status, current_task_id, thought, last_tool_call, skill_name, skill_tier, skill_title, now))
             conn.commit()
 
     def get_agent_status(self, project_id: str, role: str) -> AgentState:
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at FROM agent_states WHERE project_id = ? AND role = ?", (project_id, role))
+            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at, skill_name, skill_tier, skill_title FROM agent_states WHERE project_id = ? AND role = ?", (project_id, role))
             r = cur.fetchone()
             if r:
-                return AgentState(project_id=r[0], role=r[1], status=AgentStatus(r[2]), current_task_id=r[3], thought=r[4], last_tool_call=r[5], updated_at=r[6])
+                return AgentState(
+                    project_id=r[0],
+                    role=r[1],
+                    status=AgentStatus(r[2]),
+                    current_task_id=r[3],
+                    thought=r[4],
+                    last_tool_call=r[5],
+                    updated_at=r[6],
+                    skill_name=r[7] if len(r) > 7 else None,
+                    skill_tier=r[8] if len(r) > 8 else "stock",
+                    skill_title=r[9] if len(r) > 9 else None
+                )
         return AgentState(project_id=project_id, role=role)
+
+    def assign_agent_skill(
+        self,
+        project_id: str,
+        role: str,
+        skill_name: str,
+        skill_tier: str = "stock",
+        skill_title: Optional[str] = None
+    ) -> AgentState:
+        now = time.time()
+        with self._get_conn() as conn:
+            conn.execute("""
+                UPDATE agent_states
+                SET skill_name = ?, skill_tier = ?, skill_title = ?, updated_at = ?
+                WHERE project_id = ? AND role = ?
+            """, (skill_name, skill_tier, skill_title, now, project_id, role))
+            conn.commit()
+        return self.get_agent_status(project_id, role)
 
     def get_all_agent_states(self, project_id: str) -> List[AgentState]:
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at FROM agent_states WHERE project_id = ? ORDER BY role ASC", (project_id,))
-            return [AgentState(project_id=r[0], role=r[1], status=AgentStatus(r[2]), current_task_id=r[3], thought=r[4], last_tool_call=r[5], updated_at=r[6]) for r in cur.fetchall()]
+            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at, skill_name, skill_tier, skill_title FROM agent_states WHERE project_id = ? ORDER BY role ASC", (project_id,))
+            return [
+                AgentState(
+                    project_id=r[0],
+                    role=r[1],
+                    status=AgentStatus(r[2]),
+                    current_task_id=r[3],
+                    thought=r[4],
+                    last_tool_call=r[5],
+                    updated_at=r[6],
+                    skill_name=r[7] if len(r) > 7 else None,
+                    skill_tier=r[8] if len(r) > 8 else "stock",
+                    skill_title=r[9] if len(r) > 9 else None
+                )
+                for r in cur.fetchall()
+            ]
 
     def list_agents(self, project_id: str) -> List[AgentState]:
         return self.get_all_agent_states(project_id)
