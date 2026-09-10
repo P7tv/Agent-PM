@@ -48,11 +48,11 @@ export default function App() {
   // Fetch projects and initial data
   const fetchData = async () => {
     try {
-      let res = await fetch('/api/projects');
-      let data = await res.json();
+      const res = await fetch('/api/projects');
+      const data = await res.json();
       
       setProjects(data);
-      if (data.length > 0 && !activeProjectId) {
+      if (data.length > 0 && (!activeProjectId || !data.some(p => p.project_id === activeProjectId))) {
         setActiveProjectId(data[0].project_id);
       }
 
@@ -129,6 +129,8 @@ export default function App() {
             setActiveApproval(data);
           } else if (evType === 'DECISION_GATE_RESOLVED') {
             setActiveApproval(null);
+          } else if (evType === 'PROJECT_DELETED') {
+            fetchData();
           }
         } catch (e) {
           console.error('WS parse error:', e);
@@ -193,6 +195,17 @@ export default function App() {
     const created = await res.json();
     await fetchData();
     setActiveProjectId(created.project_id);
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+    await fetchData();
+    if (activeProjectId === projectId) {
+      setActiveProjectId(null);
+    }
+    if (focusedProjectId === projectId) {
+      setViewMode('OFFICE');
+    }
   };
 
   const handleFocusProject = (projectId) => {
@@ -291,6 +304,8 @@ export default function App() {
             agentStates={agentStates}
             onAgentClick={(projId, role) => setWhisperTarget({ projectId: projId, role })}
             onFocusProject={handleFocusProject}
+            onDeleteProject={handleDeleteProject}
+            onOpenAddProject={() => setIsAddProjectOpen(true)}
           />
         )}
 
@@ -299,6 +314,8 @@ export default function App() {
             projects={projects}
             tasksByProject={tasksByProject}
             liveStreamsByProject={liveStreams}
+            onDeleteProject={handleDeleteProject}
+            onOpenAddProject={() => setIsAddProjectOpen(true)}
           />
         )}
 

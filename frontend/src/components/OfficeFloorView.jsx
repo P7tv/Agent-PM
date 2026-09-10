@@ -8,7 +8,9 @@ import {
   ShieldCheck, 
   FileText, 
   Bot,
-  Eye 
+  Eye,
+  Trash2,
+  FolderPlus
 } from 'lucide-react';
 
 const ROLE_ICONS = {
@@ -21,7 +23,14 @@ const ROLE_ICONS = {
   DocWriter: <FileText size={20} />
 };
 
-export default function OfficeFloorView({ projects, agentStates, onAgentClick, onFocusProject }) {
+export default function OfficeFloorView({ 
+  projects, 
+  agentStates, 
+  onAgentClick, 
+  onFocusProject, 
+  onDeleteProject,
+  onOpenAddProject 
+}) {
   return (
     <div className="office-floor">
       {projects.map((project, idx) => {
@@ -38,14 +47,28 @@ export default function OfficeFloorView({ projects, agentStates, onAgentClick, o
                   <p className="room-workspace">{project.workspace_path}</p>
                 </div>
               </div>
-              <button
-                className="view-btn"
-                onClick={() => onFocusProject(project.project_id)}
-                title="Enter detailed project view"
-              >
-                <Eye size={14} />
-                <span>Deep Dive</span>
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  className="view-btn"
+                  onClick={() => onFocusProject(project.project_id)}
+                  title="Enter detailed project view"
+                >
+                  <Eye size={14} />
+                  <span>Deep Dive</span>
+                </button>
+                <button
+                  className="view-btn"
+                  onClick={() => {
+                    if (window.confirm(`Disconnect and remove project "${project.name}"?`)) {
+                      onDeleteProject(project.project_id);
+                    }
+                  }}
+                  title="Remove project workspace"
+                  style={{ color: 'var(--text-muted)', padding: '6px 8px' }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             </div>
 
             <div className="agent-desks-grid">
@@ -77,6 +100,37 @@ export default function OfficeFloorView({ projects, agentStates, onAgentClick, o
           </div>
         );
       })}
+
+      {/* Empty slot when fewer than 2 projects */}
+      {projects.length < 2 && (
+        <div 
+          className="office-room" 
+          style={{ 
+            border: '2px dashed var(--border-medium)', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            minHeight: '340px',
+            textAlign: 'center',
+            cursor: 'pointer'
+          }}
+          onClick={onOpenAddProject}
+        >
+          <div style={{ width: '56px', height: '56px', borderRadius: '14px', background: 'var(--primary-subtle)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '14px' }}>
+            <FolderPlus size={28} />
+          </div>
+          <h3 style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
+            Connect Project 02
+          </h3>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', maxWidth: '280px', marginBottom: '16px' }}>
+            Run a second project concurrently with an independent team of 7 AI agents.
+          </p>
+          <button className="dispatch-btn" style={{ fontSize: '13px', padding: '8px 16px' }}>
+            + Add Workspace
+          </button>
+        </div>
+      )}
     </div>
   );
 }

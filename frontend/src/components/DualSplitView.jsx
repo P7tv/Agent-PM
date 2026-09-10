@@ -1,7 +1,13 @@
 import React from 'react';
-import { Layers, Activity, CheckCircle2, Clock } from 'lucide-react';
+import { Layers, Activity, CheckCircle2, Clock, Trash2, FolderPlus } from 'lucide-react';
 
-export default function DualSplitView({ projects, tasksByProject, liveStreamsByProject }) {
+export default function DualSplitView({ 
+  projects, 
+  tasksByProject, 
+  liveStreamsByProject, 
+  onDeleteProject,
+  onOpenAddProject 
+}) {
   return (
     <div className="dual-split-view">
       {projects.map((project) => {
@@ -19,9 +25,23 @@ export default function DualSplitView({ projects, tasksByProject, liveStreamsByP
                 <h3 className="room-title">{project.name}</h3>
                 <p className="room-workspace">{project.workspace_path}</p>
               </div>
-              <span className="room-tag">
-                {project.auto_pilot ? 'Auto-Pilot' : 'Gate Mode'}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="room-tag">
+                  {project.auto_pilot ? 'Auto-Pilot' : 'Gate Mode'}
+                </span>
+                <button
+                  className="view-btn"
+                  onClick={() => {
+                    if (window.confirm(`Disconnect and remove project "${project.name}"?`)) {
+                      onDeleteProject(project.project_id);
+                    }
+                  }}
+                  title="Remove project"
+                  style={{ color: 'var(--text-muted)', padding: '4px 6px' }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
 
             {/* Kanban Overview */}
@@ -90,6 +110,37 @@ export default function DualSplitView({ projects, tasksByProject, liveStreamsByP
           </div>
         );
       })}
+
+      {/* Empty column if fewer than 2 projects */}
+      {projects.length < 2 && (
+        <div 
+          className="project-column" 
+          style={{ 
+            border: '2px dashed var(--border-medium)', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            minHeight: '340px',
+            textAlign: 'center',
+            cursor: 'pointer'
+          }}
+          onClick={onOpenAddProject}
+        >
+          <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--primary-subtle)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>
+            <FolderPlus size={24} />
+          </div>
+          <h4 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+            Connect Project 02
+          </h4>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', maxWidth: '240px', marginBottom: '14px' }}>
+            Split screen will display both projects side-by-side.
+          </p>
+          <button className="dispatch-btn" style={{ fontSize: '12px', padding: '6px 14px' }}>
+            + Add Project
+          </button>
+        </div>
+      )}
     </div>
   );
 }

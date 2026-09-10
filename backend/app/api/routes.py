@@ -51,6 +51,15 @@ def get_project(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     return p
 
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    store.delete_project(project_id)
+    await hub.broadcast("PROJECT_DELETED", {"project_id": project_id})
+    return {"status": "DELETED", "project_id": project_id}
+
 @router.get("/projects/{project_id}/agents")
 def get_project_agents(project_id: str):
     p = store.get_project(project_id)

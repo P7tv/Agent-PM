@@ -153,3 +153,11 @@ class StateStore:
         with self._get_conn() as conn:
             conn.execute("UPDATE approvals SET status = ? WHERE request_id = ?", (status, request_id))
             conn.commit()
+
+    def delete_project(self, project_id: str):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM agent_states WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM approvals WHERE project_id = ?", (project_id,))
+            conn.commit()
