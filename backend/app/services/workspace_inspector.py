@@ -212,6 +212,11 @@ class WorkspaceInspector:
         if "Node.js" in stack or "React" in stack:
             return [
                 {
+                    "role": "TechLead",
+                    "title": "Lead Software Engineer & Tech Lead",
+                    "description": f"Coordinates team execution for {stack} application, synthesizes status standups, resolves blockers, and reports directly to the PM."
+                },
+                {
                     "role": "Architect",
                     "title": "Lead Software Architect",
                     "description": f"Decomposes requirements for {stack} application into modular components and state stores."
@@ -250,6 +255,11 @@ class WorkspaceInspector:
         elif "Python" in stack:
             return [
                 {
+                    "role": "TechLead",
+                    "title": "Staff Python Engineer & Tech Lead",
+                    "description": "Orchestrates Python backend workflow, conducts daily standup briefings, resolves blockers, and liaises with PM."
+                },
+                {
                     "role": "Architect",
                     "title": "Python Solutions Architect",
                     "description": "Plans data models, Pydantic schemas, dependency structures, and service boundaries."
@@ -287,6 +297,11 @@ class WorkspaceInspector:
             ]
         else:
             return [
+                {
+                    "role": "TechLead",
+                    "title": "Principal Engineer & Tech Lead",
+                    "description": "Supervises project architecture, monitors team health, delivers standup briefings, and coordinates with PM."
+                },
                 {
                     "role": "Architect",
                     "title": "Systems Architect",

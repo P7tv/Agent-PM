@@ -1,7 +1,7 @@
 import sqlite3
 import json
 import time
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest
 
 class StateStore:
@@ -20,9 +20,16 @@ class StateStore:
                     name TEXT,
                     workspace_path TEXT,
                     auto_pilot INTEGER DEFAULT 0,
-                    created_at REAL
+                    created_at REAL,
+                    metadata_json TEXT DEFAULT '{}'
                 )
             """)
+            # Migration: add metadata_json if table already exists without it
+            try:
+                conn.execute("ALTER TABLE projects ADD COLUMN metadata_json TEXT DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_id TEXT PRIMARY KEY,
@@ -59,15 +66,27 @@ class StateStore:
             """)
             conn.commit()
 
-    def create_project(self, project_id: str, name: str, workspace_path: str, auto_pilot: bool = False) -> Project:
+    def create_project(self, project_id: str, name: str, workspace_path: str, auto_pilot: bool = False, metadata: Optional[Dict[str, Any]] = None) -> Project:
         now = time.time()
+        meta_str = json.dumps(metadata) if metadata else "{}"
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
-                (project_id, name, workspace_path, 1 if auto_pilot else 0, now)
+                "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?, ?)",
+                (project_id, name, workspace_path, 1 if auto_pilot else 0, now, meta_str)
             )
             conn.commit()
         return Project(project_id=project_id, name=name, workspace_path=workspace_path, auto_pilot=auto_pilot, created_at=now)
+
+    def get_project_metadata(self, project_id: str) -> Dict[str, Any]:
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT metadata_json FROM projects WHERE project_id = ?", (project_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    return json.loads(row[0])
+                except Exception:
+                    return {}
+        return {}
 
     def get_project(self, project_id: str) -> Optional[Project]:
         with self._get_conn() as conn:
@@ -133,6 +152,9 @@ class StateStore:
         with self._get_conn() as conn:
             cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at FROM agent_states WHERE project_id = ? ORDER BY role ASC", (project_id,))
             return [AgentState(project_id=r[0], role=r[1], status=AgentStatus(r[2]), current_task_id=r[3], thought=r[4], last_tool_call=r[5], updated_at=r[6]) for r in cur.fetchall()]
+
+    def list_agents(self, project_id: str) -> List[AgentState]:
+        return self.get_all_agent_states(project_id)
 
     def create_approval_request(self, project_id: str, gate_type: str, summary: str) -> ApprovalRequest:
         req = ApprovalRequest(project_id=project_id, gate_type=gate_type, summary=summary)

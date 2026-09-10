@@ -4,6 +4,7 @@ from app.services.state_store import StateStore
 from app.models.schemas import Project, AgentRole
 
 DEFAULT_ROLES = [
+    AgentRole.TECH_LEAD.value,
     AgentRole.ARCHITECT.value,
     AgentRole.DESIGNER.value,
     AgentRole.FRONTEND_DEV.value,
@@ -36,7 +37,7 @@ class ProjectManager:
                 raise ValueError(f"Maximum active projects limit ({self.max_projects}) reached.")
         
         proj_name = name or meta.get("suggested_name") or "Project"
-        proj = self.store.create_project(project_id, proj_name, resolved_path, auto_pilot)
+        proj = self.store.create_project(project_id, proj_name, resolved_path, auto_pilot, metadata=meta)
         
         # 2. Dynamic Subagent Tailoring based on analyzed codebase
         tailored_agents = self.inspector.generate_tailored_roster(meta)

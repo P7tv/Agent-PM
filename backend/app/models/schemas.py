@@ -5,6 +5,7 @@ import uuid
 import time
 
 class AgentRole(str, Enum):
+    TECH_LEAD = "TechLead"
     ARCHITECT = "Architect"
     DESIGNER = "Designer"
     FRONTEND_DEV = "FrontendDev"
