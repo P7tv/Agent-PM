@@ -56,6 +56,8 @@ class AgentState(BaseModel):
     skill_name: Optional[str] = None
     skill_tier: Optional[str] = "stock"
     skill_title: Optional[str] = None
+    equipped_skills: List[str] = Field(default_factory=list)
+    skill_mode: str = "AUTO"
     updated_at: float = Field(default_factory=time.time)
 
 class SkillMetadata(BaseModel):
@@ -94,4 +96,13 @@ class DownloadSkillRequest(BaseModel):
 
 class AssignSkillRequest(BaseModel):
     skill_name: str
+
+class SkillAddRequest(BaseModel):
+    skill_name: str
+
+class SkillRemoveRequest(BaseModel):
+    skill_name: str
+
+class SetSkillModeRequest(BaseModel):
+    mode: str  # "AUTO" or "MANUAL"
 

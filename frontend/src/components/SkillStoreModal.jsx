@@ -408,7 +408,7 @@ export default function SkillStoreModal({
                 >
                   <Check size={16} />
                   <span>
-                    Successfully assigned <strong>{assignSuccessRole.skillName}</strong> to specialist{' '}
+                    Successfully equipped <strong>{assignSuccessRole.skillName}</strong> to specialist{' '}
                     <strong>{assignSuccessRole.role}</strong>!
                   </span>
                 </div>
@@ -554,7 +554,7 @@ export default function SkillStoreModal({
                               }}
                             >
                               <option value="" disabled>
-                                Assign to...
+                                + Equip to Agent
                               </option>
                               {agents.map((ag) => (
                                 <option key={ag.role} value={ag.role}>

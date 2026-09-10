@@ -1,7 +1,11 @@
 import time
+import os
+import shutil
+import subprocess
 from typing import Dict, Any, List
 from app.services.state_store import StateStore
 from app.services.project_manager import ProjectManager
+
 
 class TechLeadService:
     def __init__(self, store: StateStore, pm: ProjectManager):
@@ -82,28 +86,94 @@ class TechLeadService:
 
     def chat_with_lead(self, project_id: str, message: str) -> Dict[str, Any]:
         standup = self.generate_standup(project_id)
+        meta = self.store.get_project_metadata(project_id)
         msg_lower = message.lower()
 
-        # Context-aware conversational responses
-        if any(k in msg_lower for k in ["status", "how", "update", "progress", "สถานะ", "คืบหน้า"]):
+        # 1. Real AI-Powered Response via Google Antigravity CLI (agy)
+        agy_path = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
+        if os.path.exists(agy_path) and not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                workspace = meta.get("path") or ""
+                purpose_desc = standup.get("purpose") or meta.get("purpose_summary") or meta.get("summary") or "Software application"
+                dirs_preview = ", ".join([d.rstrip('/') for d in meta.get("directory_structure", []) if not d.startswith('.')][:6])
+                
+                ai_prompt = (
+                    f"You are the Project Tech Lead for the project '{standup['project_name']}'.\n"
+                    f"Architecture & Codebase context:\n"
+                    f"- Stack: {standup['stack_type']}\n"
+                    f"- Purpose/Features: {purpose_desc}\n"
+                    f"- Core modules: {dirs_preview}\n"
+                    f"- Health: {standup['health_status']} ({standup['progress_percent']}% complete)\n"
+                    f"- Active work: {standup['active_items']}\n"
+                    f"- Next tasks: {standup['next_steps']}\n\n"
+                    f"The PM asks: \"{message}\"\n\n"
+                    f"Respond as the friendly, knowledgeable, professional Tech Lead in natural, fluent Thai. "
+                    f"Explain what the project actually is, what it does, its key systems and technologies, and current status. "
+                    f"Be helpful, informative, and avoid stiff template phrasing. (2-3 paragraphs max)"
+                )
+                res = subprocess.run(
+                    [agy_path, "-p", ai_prompt, "--effort", "low"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15.0,
+                    cwd=workspace if os.path.exists(workspace) else None
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    return {
+                        "project_id": project_id,
+                        "role": "TechLead",
+                        "message": res.stdout.strip(),
+                        "timestamp": time.time()
+                    }
+            except Exception:
+                pass
+
+        # 2. Project Overview & Purpose Fallback (Thai & English)
+        if any(k in msg_lower for k in [
+
+            "about", "purpose", "overview", "what is", "explain", "describe", "summary",
+            "เกี่ยวกับอะไร", "คืออะไร", "ทำอะไร", "อธิบาย", "งานนี้", "โปรเจกต์นี้", "สรุปงาน", "ทำอะไรอยู่"
+        ]):
+            purpose_text = standup.get("purpose") or meta.get("purpose_summary") or meta.get("summary")
+            if not purpose_text or purpose_text.strip() == "":
+                purpose_text = f"ระบบ {standup['stack_type']} ใน workspace"
+
+            frameworks_str = ", ".join(meta.get("frameworks", [])) if meta.get("frameworks") else ""
+            stack_desc = f"{standup['stack_type']}" + (f" ({frameworks_str})" if frameworks_str else "")
+            
+            # Key directories or files if available
+            dirs = [d.rstrip('/') for d in meta.get("directory_structure", []) if not d.startswith('.')][:4]
+            dir_hint = f" โครงสร้างสำคัญ: {', '.join(dirs)}" if dirs else ""
+
+            reply = (
+                f"โปรเจกต์ '{standup['project_name']}' ({stack_desc}): {purpose_text} ครับ{dir_hint} "
+                f"ปัจจุบันสถานะทีมคือ {standup['health_status']} มีความคืบหน้ารวม {standup['progress_percent']}% "
+                f"({'มีงาน active: ' + standup['active_items'][0] if standup['active_items'] else 'ทีมพร้อมรับ directive ถัดไป'})"
+            )
+        # 2. Status & Progress
+        elif any(k in msg_lower for k in ["status", "how", "update", "progress", "สถานะ", "คืบหน้า", "เป็นไง", "ถึงไหน", "เช็คสถานะ"]):
             reply = (
                 f"Currently our project '{standup['project_name']}' is {standup['health_status']}. "
                 f"Progress stands at {standup['progress_percent']}% ({len(standup['completed_items'])} done, "
                 f"{len(standup['active_items'])} active). {standup['summary']}"
             )
-        elif any(k in msg_lower for k in ["block", "stuck", "error", "fail", "ปัญหา", "ติด"]):
+        # 3. Blockers & Issues
+        elif any(k in msg_lower for k in ["block", "stuck", "error", "fail", "ปัญหา", "ติด", "บั๊ก", "พัง"]):
             if standup["blockers"]:
                 reply = f"Here are the active blockers: " + "; ".join(standup["blockers"])
             else:
                 reply = "Good news! There are zero blockers right now. All agents are executing smoothly."
-        elif any(k in msg_lower for k in ["next", "priority", "todo", "ต่อไป", "ทำอะไร"]):
+        # 4. Next Steps & Priorities
+        elif any(k in msg_lower for k in ["next", "priority", "todo", "ต่อไป", "ถัดไป", "แพลน", "ทำต่อ"]):
             reply = f"Our top next steps are: " + "; ".join(standup["next_steps"])
-        elif any(k in msg_lower for k in ["tech", "stack", "framework", "สแตก"]):
-            reply = f"We are built on {standup['stack_type']}. Project scope: {standup.get('purpose', 'Standard web service')}."
+        # 5. Technology Stack
+        elif any(k in msg_lower for k in ["tech", "stack", "framework", "สแตก", "ภาษา", "เทคโนโลยี", "tool"]):
+            reply = f"We are built on {standup['stack_type']}. Project scope: {standup.get('purpose', 'Standard software workspace')}."
         else:
             reply = (
-                f"Understood! As Tech Lead for {standup['project_name']}, I've noted that: '{message}'. "
-                f"Current team progress is {standup['progress_percent']}% with health status {standup['health_status']}."
+                f"รับทราบครับ! ในฐานะ Tech Lead ของโปรเจกต์ {standup['project_name']} ({standup['stack_type']}) "
+                f"บันทึกข้อความ: '{message}' เรียบร้อยแล้วครับ ปัจจุบันสถานะทีมคือ {standup['health_status']} "
+                f"ความคืบหน้า {standup['progress_percent']}% หากต้องการดูภาพรวม ถามว่า 'งานนี้เกี่ยวกับอะไร' หรือ 'ขอสถานะ' ได้เลยครับ"
             )
 
         return {
@@ -112,3 +182,4 @@ class TechLeadService:
             "message": reply,
             "timestamp": time.time()
         }
+

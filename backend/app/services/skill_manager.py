@@ -172,28 +172,84 @@ class SkillManager:
             raw_content=""
         )
 
+    def get_base_role_skill(self, role: str) -> SkillInfo:
+        normalized = self._normalize_role(role)
+        stock_skill_path = os.path.join(self.stock_skills_dir, normalized, "SKILL.md")
+        if os.path.exists(stock_skill_path):
+            stock_skill = self._parse_skill_file(stock_skill_path, default_tier="stock")
+            if stock_skill:
+                return stock_skill
+                
+        return SkillInfo(
+            name=normalized,
+            title=normalized.replace("-", " ").title(),
+            description=f"Base role playbook for {normalized}",
+            tier="stock",
+            instructions=f"# {normalized.replace('-', ' ').title()} Playbook\n\nOperate as a specialist in {normalized}."
+        )
+
+    def get_domain_skills_for_role(self, role: str) -> List[SkillInfo]:
+        normalized = self._normalize_role(role)
+        role_to_domains = {
+            "frontend-dev": ["frontend", "ui", "design", "qa"],
+            "backend-dev": ["backend", "api", "database", "qa"],
+            "tech-lead": ["lead", "architecture", "plan"],
+            "architect": ["architecture", "system"],
+            "qa-engineer": ["qa", "test", "verification"]
+        }
+        
+        all_skills = self.list_available_skills()
+        domains = role_to_domains.get(normalized, ["general", "plan", "debug"])
+        
+        matched = []
+        for s in all_skills:
+            if any(d in s.name.lower() or d in s.description.lower() for d in domains):
+                matched.append(s)
+        return matched[:3]
+
     def synthesize_agent_prompt(
         self,
         role: str,
         project_context: Optional[Dict] = None,
-        project_path: Optional[str] = None
+        project_path: Optional[str] = None,
+        base_skill: Optional[SkillInfo] = None,
+        active_skills: Optional[List[SkillInfo]] = None
     ) -> str:
         """
         Synthesizes the unified agent system prompt:
-        [80% Stock Playbook / Principles] + [20% Project Context & Constraints]
+        [Core Role Playbook] + [Equipped/Relevant Skills] + [Project Context]
         """
-        skill = self.get_skill(role, project_path=project_path)
+        if not base_skill:
+            base_skill = self.get_base_role_skill(role)
+            
+        active_skills = active_skills or []
         
         prompt_parts = []
-        prompt_parts.append(f"You are the **{skill.title}** ({role}).")
-        prompt_parts.append(f"Specialty Description: {skill.description}\n")
+        prompt_parts.append(f"You are the **{base_skill.title}** ({role}).")
+        prompt_parts.append(f"Specialty Description: {base_skill.description}\n")
 
-        # Inject 80% Playbook
+        # 1. Base Role Playbook (100% permanent)
         prompt_parts.append("============================================================")
-        prompt_parts.append(f"📖 OPERATIONAL PLAYBOOK ({skill.name.upper()} - {skill.tier.upper()} TIER)")
+        prompt_parts.append(f"📖 CORE ROLE PLAYBOOK ({base_skill.name.upper()})")
         prompt_parts.append("============================================================")
-        prompt_parts.append(skill.instructions)
+        prompt_parts.append(base_skill.instructions)
         prompt_parts.append("")
+
+        # 2. Equipped or Auto Domain Skills
+        if active_skills:
+            prompt_parts.append("============================================================")
+            prompt_parts.append(f"🎯 SKILL CAPABILITIES CATALOG FOR {role.upper()}")
+            prompt_parts.append("============================================================")
+            for s in active_skills:
+                prompt_parts.append(f"\n--- SKILL: {s.name} ---")
+                prompt_parts.append(f"Title: {s.title}")
+                prompt_parts.append(f"Instructions:\n{s.instructions}\n")
+                
+            prompt_parts.append("SKILL ACTIVATION RULES:")
+            prompt_parts.append("1. CASUAL / SIMPLE: For greetings, short questions, status inquiries, or straightforward answers, respond directly and concisely. DO NOT execute complex multi-step skill checklists.")
+            prompt_parts.append("2. ENGINEERING TASKS: When the user requests coding, bug investigation, testing, or architectural design matching one of your skills, adopt that skill's methodology.")
+            prompt_parts.append("3. TRANSPARENCY: If you utilize a specific skill in your work, note it with `[Used Skill: <skill-name>]` in your response.")
+            prompt_parts.append("")
 
         # Inject 20% Project Context (if provided)
         if project_context:
@@ -216,7 +272,7 @@ class SkillManager:
 
         prompt_parts.append("============================================================")
         prompt_parts.append("RULES OF ENGAGEMENT:")
-        prompt_parts.append("1. Always follow the Operational Playbook strictly.")
+        prompt_parts.append("1. Always follow the Core Role Playbook strictly.")
         prompt_parts.append("2. Respect the Project Context constraints (do not use conflicting test commands or frameworks).")
         prompt_parts.append("3. Provide clean, production-grade, tested solutions.")
 
@@ -376,8 +432,20 @@ class SkillManager:
         os.makedirs(target_dir, exist_ok=True)
         target_file = os.path.join(target_dir, "SKILL.md")
 
-        # Ensure minimal frontmatter if completely absent
-        if not content.strip().startswith("---"):
+        # Ensure frontmatter exists and reflects the intended skill name and tier
+        if content.strip().startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    fm = yaml.safe_load(parts[1]) or {}
+                    if skill_name:
+                        fm["name"] = clean_name
+                    fm["tier"] = tier
+                    new_yaml = yaml.dump(fm, sort_keys=False).strip()
+                    content = f"---\n{new_yaml}\n---\n{parts[2].lstrip()}"
+                except Exception:
+                    pass
+        else:
             title = clean_name.replace("-", " ").title()
             content = f"---\nname: {clean_name}\ntitle: {title}\ndescription: Custom imported skill for {title}\ntier: {tier}\n---\n\n" + content
 

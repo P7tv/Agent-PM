@@ -46,7 +46,10 @@ class ProjectManager:
                 project_id=project_id,
                 role=agent["role"],
                 status="IDLE",
-                thought=f"Specialized for {meta.get('stack_type')}: {agent['description']}"
+                thought=f"Specialized for {meta.get('stack_type')}: {agent['description']}",
+                skill_name=agent.get("skill_name"),
+                skill_tier=agent.get("skill_tier", "stock"),
+                skill_title=agent.get("title")
             )
             
         return proj

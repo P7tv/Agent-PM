@@ -49,3 +49,22 @@ def test_tech_lead_chat_response():
         assert reply["role"] == "TechLead"
         assert "message" in reply
         assert len(reply["message"]) > 0
+
+def test_tech_lead_thai_chat_overview():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = StateStore(db_path=os.path.join(tmpdir, "test.db"))
+        pm = ProjectManager(store=store)
+        ws_dir = os.path.join(tmpdir, "ws")
+        os.makedirs(ws_dir)
+        with open(os.path.join(ws_dir, "package.json"), "w", encoding="utf-8") as f:
+            f.write('{"name": "f1-racing", "dependencies": {"vite": "^5.0.0"}}')
+            
+        pm.register_project("f1", "f1", ws_dir)
+        service = TechLeadService(store=store, pm=pm)
+        
+        reply = service.chat_with_lead("f1", "งานนี้เกี่ยวกับอะไร")
+        assert reply["role"] == "TechLead"
+        assert "โปรเจกต์ 'f1'" in reply["message"]
+        assert "Node.js" in reply["message"]
+        assert "สถานะทีม" in reply["message"]
+

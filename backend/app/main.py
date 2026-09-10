@@ -16,6 +16,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
+        "script-src * 'unsafe-inline' 'unsafe-eval' blob: data: chrome-extension:; "
+        "style-src * 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src * data: https://fonts.gstatic.com;"
+    )
+    return response
+
 app.include_router(router)
 
 @app.websocket("/ws/live")

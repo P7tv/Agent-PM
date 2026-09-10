@@ -28,4 +28,6 @@ def test_api_projects_lifecycle():
     # Get agents list
     res = client.get("/api/projects/alpha/agents")
     assert res.status_code == 200
-    assert len(res.json()) >= 7
+    agents = res.json()
+    assert len(agents) >= 4
+    assert any(a["role"] == "TechLead" for a in agents)

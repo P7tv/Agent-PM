@@ -12,9 +12,10 @@ import PMCommandBar from './components/PMCommandBar';
 import OfficeFloorView from './components/OfficeFloorView';
 import DualSplitView from './components/DualSplitView';
 import FocusRoomView from './components/FocusRoomView';
-import { DecisionGateModal, WhisperModal } from './components/DecisionGateModal';
+import { DecisionGateModal } from './components/DecisionGateModal';
 import AddProjectModal from './components/AddProjectModal';
 import TechLeadStandupModal from './components/TechLeadStandupModal';
+import DeleteProjectModal from './components/DeleteProjectModal';
 
 export default function App() {
   const [theme, setTheme] = useState(() => {
@@ -28,12 +29,14 @@ export default function App() {
   const [agentStates, setAgentStates] = useState({}); // { [projId]: [AgentState] }
   const [tasksByProject, setTasksByProject] = useState({}); // { [projId]: [TaskItem] }
   const [liveStreams, setLiveStreams] = useState({}); // { [projId]: [logs] }
+  const [consoleHistories, setConsoleHistories] = useState({}); // { [projId]: [ConsoleMessage] }
 
   const [activeApproval, setActiveApproval] = useState(null);
-  const [whisperTarget, setWhisperTarget] = useState(null); // { projectId, role }
   const [standupProject, setStandupProject] = useState(null); // { projectId, projectName }
   const [isAddProjectOpen, setIsAddProjectOpen] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
+
 
   const socketRef = useRef(null);
 
@@ -58,9 +61,10 @@ export default function App() {
         setActiveProjectId(data[0].project_id);
       }
 
-      // Fetch agents & tasks for each project
+      // Fetch agents, tasks, and console history for each project
       for (const p of data) {
         fetchProjectDetails(p.project_id);
+        fetchConsoleHistory(p.project_id);
       }
     } catch (err) {
       console.error('Error fetching initial data:', err);
@@ -86,6 +90,16 @@ export default function App() {
       }
     } catch (e) {
       console.error(`Error loading details for ${projId}:`, e);
+    }
+  };
+
+  const fetchConsoleHistory = async (projId) => {
+    try {
+      const res = await fetch(`/api/projects/${projId}/console/history`);
+      const history = await res.json();
+      setConsoleHistories((prev) => ({ ...prev, [projId]: history }));
+    } catch (e) {
+      console.error(`Error loading console history for ${projId}:`, e);
     }
   };
 
@@ -133,6 +147,14 @@ export default function App() {
             setActiveApproval(null);
           } else if (evType === 'PROJECT_DELETED') {
             fetchData();
+          } else if (evType === 'CONSOLE_MESSAGE') {
+            // Append console message to the correct project's history
+            if (projId) {
+              setConsoleHistories((prev) => ({
+                ...prev,
+                [projId]: [...(prev[projId] || []), data]
+              }));
+            }
           }
         } catch (e) {
           console.error('WS parse error:', e);
@@ -184,6 +206,14 @@ export default function App() {
     });
   };
 
+  const handleSendConsoleMessage = async (projectId, message, attachments = []) => {
+    await fetch(`/api/projects/${projectId}/console/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, attachments })
+    });
+  };
+
   const handleAddProject = async (projectData) => {
     const res = await fetch('/api/projects', {
       method: 'POST',
@@ -200,15 +230,41 @@ export default function App() {
   };
 
   const handleDeleteProject = async (projectId) => {
-    await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
-    await fetchData();
-    if (activeProjectId === projectId) {
-      setActiveProjectId(null);
-    }
-    if (focusedProjectId === projectId) {
-      setViewMode('OFFICE');
+    setProjectToDelete(null);
+    try {
+      // 1. Optimistically remove project from state immediately
+      setProjects((prev) => prev.filter((p) => p.project_id !== projectId));
+      setAgentStates((prev) => {
+        const next = { ...prev };
+        delete next[projectId];
+        return next;
+      });
+      setTasksByProject((prev) => {
+        const next = { ...prev };
+        delete next[projectId];
+        return next;
+      });
+      if (activeProjectId === projectId) {
+        setActiveProjectId(null);
+      }
+      if (focusedProjectId === projectId) {
+        setViewMode('OFFICE');
+        setFocusedProjectId(null);
+      }
+
+      // 2. Perform backend deletion
+      const res = await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json();
+        console.error('Failed to delete project on backend:', err);
+      }
+      // 3. Re-sync from server
+      await fetchData();
+    } catch (err) {
+      console.error('Delete project failed:', err);
     }
   };
+
 
   const handleFocusProject = (projectId) => {
     setFocusedProjectId(projectId);
@@ -302,11 +358,13 @@ export default function App() {
       <main className="content-area">
         {viewMode === 'OFFICE' && (
           <OfficeFloorView
+            key="office"
             projects={projects}
             agentStates={agentStates}
-            onAgentClick={(projId, role) => setWhisperTarget({ projectId: projId, role })}
+            onAgentClick={(projId, role) => handleFocusProject(projId)}
             onFocusProject={handleFocusProject}
             onDeleteProject={handleDeleteProject}
+            onRequestDelete={setProjectToDelete}
             onOpenAddProject={() => setIsAddProjectOpen(true)}
             onOpenStandup={(pid, pname) => setStandupProject({ projectId: pid, projectName: pname })}
           />
@@ -318,6 +376,7 @@ export default function App() {
             tasksByProject={tasksByProject}
             liveStreamsByProject={liveStreams}
             onDeleteProject={handleDeleteProject}
+            onRequestDelete={setProjectToDelete}
             onOpenAddProject={() => setIsAddProjectOpen(true)}
             onDispatchDirective={handleDispatchDirective}
             onOpenStandup={(pid, pname) => setStandupProject({ projectId: pid, projectName: pname })}
@@ -330,8 +389,12 @@ export default function App() {
             agents={agentStates[focusedProjectId] || []}
             tasks={tasksByProject[focusedProjectId] || []}
             liveStream={liveStreams[focusedProjectId] || []}
+            consoleHistory={consoleHistories[focusedProjectId] || []}
             onBack={() => setViewMode('OFFICE')}
-            onAgentClick={(projId, role) => setWhisperTarget({ projectId: projId, role })}
+            onSendConsoleMessage={handleSendConsoleMessage}
+            onSendWhisper={handleSendWhisper}
+            onRequestDelete={setProjectToDelete}
+            onDeleteProject={handleDeleteProject}
           />
         )}
       </main>
@@ -342,16 +405,17 @@ export default function App() {
         onResolve={handleResolveApproval}
       />
 
-      <WhisperModal
-        whisperTarget={whisperTarget}
-        onClose={() => setWhisperTarget(null)}
-        onSendWhisper={handleSendWhisper}
-      />
-
       <AddProjectModal
         isOpen={isAddProjectOpen}
         onClose={() => setIsAddProjectOpen(false)}
         onAddProject={handleAddProject}
+      />
+
+      <DeleteProjectModal
+        isOpen={Boolean(projectToDelete)}
+        project={projectToDelete}
+        onConfirm={handleDeleteProject}
+        onCancel={() => setProjectToDelete(null)}
       />
 
       <TechLeadStandupModal
@@ -359,7 +423,9 @@ export default function App() {
         onClose={() => setStandupProject(null)}
         projectId={standupProject?.projectId}
         projectName={standupProject?.projectName}
+        theme={theme}
       />
     </div>
   );
 }
+

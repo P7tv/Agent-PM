@@ -10,9 +10,11 @@ import uvicorn
 import subprocess
 import webbrowser
 import time
+from dotenv import load_dotenv
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT_DIR, "backend"))
+load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 def main():
     print("\n" + "="*60)

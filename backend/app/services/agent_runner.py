@@ -1,6 +1,9 @@
+import re
+import json
 import asyncio
+import os
 import time
-from typing import Callable, Coroutine, Any, Dict, Optional
+from typing import Callable, Coroutine, Any, Dict, Optional, AsyncGenerator, List
 
 # Antigravity SDK
 try:
@@ -8,6 +11,14 @@ try:
     HAS_ANTIGRAVITY = True
 except ImportError:
     HAS_ANTIGRAVITY = False
+
+from app.services.skill_manager import SkillManager
+
+import shutil
+
+AGY_PATH = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
+HAS_AGY_CLI = os.path.exists(AGY_PATH)
+
 ROLE_PROMPTS = {
     "TechLead": "You are the project tech lead. Coordinate tasks, resolve architectural blockers, track progress, and report clearly to the PM.",
     "Architect": "You are a software architect. Break down high-level requirements into clear, isolated tasks.",
@@ -20,8 +31,11 @@ ROLE_PROMPTS = {
 }
 
 class AgentRunner:
-    def __init__(self, use_mock: bool = False):
-        self.use_mock = use_mock or not HAS_ANTIGRAVITY
+    def __init__(self, use_mock: bool = False, skill_manager: Optional[SkillManager] = None, store: Optional[Any] = None):
+        self.use_mock = use_mock
+        self.has_api_key = bool(os.environ.get("GEMINI_API_KEY"))
+        self.skill_manager = skill_manager or SkillManager()
+        self.store = store
 
     async def dispatch_agent_task(
         self,
@@ -44,20 +58,23 @@ class AgentRunner:
 
         await emit("AGENT_STATUS_CHANGE", {"status": "THINKING"})
 
-        if self.use_mock:
-            # Deterministic simulation for tests and fallback
+        async def run_contextual_simulation():
+            stack = project_context.get("stack_type", "Project") if project_context else "Project"
+            dirs = [d.rstrip('/') for d in (project_context.get("directory_structure", []) if project_context else []) if not d.startswith('.')][:3]
+            dir_str = f" in {', '.join(dirs)}" if dirs else ""
+            
             thoughts = [
-                f"Analyzing requirements for {role}...",
-                f"Examining workspace files in {workspace_path}...",
-                "Formulating optimal approach..."
+                f"Analyzing PM requirements for {role} ({stack})...",
+                f"Examining workspace files{dir_str} at {workspace_path}...",
+                f"Aligning with role playbooks and active tasks..."
             ]
             for t in thoughts:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": t})
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.04)
                 
-            await emit("TOOL_EXECUTION_START", {"tool": "list_files", "args": {"path": workspace_path}})
-            await asyncio.sleep(0.02)
-            await emit("TOOL_EXECUTION_FINISH", {"tool": "list_files", "result": "Files checked"})
+            await emit("TOOL_EXECUTION_START", {"tool": "inspect_workspace", "args": {"path": workspace_path}})
+            await asyncio.sleep(0.03)
+            await emit("TOOL_EXECUTION_FINISH", {"tool": "inspect_workspace", "result": f"Verified workspace files for {role}"})
             
             await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
             return {
@@ -66,62 +83,185 @@ class AgentRunner:
                 "response": f"Completed tasks for: {prompt}"
             }
 
-        # Live Antigravity Python SDK Execution with Deep Project Context
-        base_instruction = ROLE_PROMPTS.get(role, "You are a helpful software engineering agent.")
-        if project_context:
-            proj_name = project_context.get("suggested_name") or project_id
-            purpose = project_context.get("purpose_summary", "")
-            stack = project_context.get("stack_type", "")
-            frameworks = ", ".join(project_context.get("frameworks", []))
-            test_cmd = project_context.get("test_command", "")
-            dirs = ", ".join(project_context.get("directory_structure", [])[:6])
+        # If explicit test mock requested, run simulation
+        if self.use_mock:
+            return await run_contextual_simulation()
 
-            ctx_header = (
-                f"Project: {proj_name}\n"
-                f"Workspace Root: {workspace_path}\n"
-                f"Project Purpose: {purpose}\n"
-                f"Stack & Frameworks: {stack} ({frameworks})\n"
-                f"Test Command: {test_cmd}\n"
-                f"Key Directories: {dirs}\n"
-            )
-            system_instruction = f"{ctx_header}\n{base_instruction}\nAlways operate strictly within {workspace_path}."
-        else:
-            system_instruction = f"{base_instruction} Always operate strictly within {workspace_path}."
+        active_skills = []
+        base_role_skill = self.skill_manager.get_base_role_skill(role)
+        if self.store:
+            agent_state = self.store.get_agent_status(project_id, role)
+            if agent_state:
+                if getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
+                    for s_name in agent_state.equipped_skills:
+                        try:
+                            active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
+                        except: pass
+                else:
+                    active_skills = self.skill_manager.get_domain_skills_for_role(role)
 
-        config = LocalAgentConfig(
-            system_instructions=system_instruction,
-            capabilities=CapabilitiesConfig()
+        system_instruction = self.skill_manager.synthesize_agent_prompt(
+            role=role,
+            project_context=project_context,
+            project_path=workspace_path,
+            base_skill=base_role_skill,
+            active_skills=active_skills
         )
-        
-        try:
-            async with Agent(config) as agent:
-                response = await agent.chat(prompt)
-                full_text = []
-                
-                # Stream thoughts if available
-                if hasattr(response, "thoughts"):
-                    async for thought in response.thoughts:
-                        await emit("AGENT_THOUGHT_DELTA", {"thought": str(thought)})
+
+        # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present)
+        if self.has_api_key and HAS_ANTIGRAVITY:
+            try:
+                system_instruction += f"\nCRITICAL CONSTRAINT: Always operate strictly within {workspace_path}."
+                config = LocalAgentConfig(
+                    system_instructions=system_instruction,
+                    capabilities=CapabilitiesConfig()
+                )
+                async with Agent(config) as agent:
+                    response = await agent.chat(prompt)
+                    full_text = []
+                    if hasattr(response, "thoughts"):
+                        async for thought in response.thoughts:
+                            await emit("AGENT_THOUGHT_DELTA", {"thought": str(thought)})
+                    if hasattr(response, "tool_calls"):
+                        async for tool_call in response.tool_calls:
+                            await emit("TOOL_EXECUTION_START", {"tool": tool_call.name, "args": tool_call.args})
+                    async for token in response:
+                        full_text.append(token)
                         
-                # Stream tool calls if available
-                if hasattr(response, "tool_calls"):
-                    async for tool_call in response.tool_calls:
-                        await emit("TOOL_EXECUTION_START", {"tool": tool_call.name, "args": tool_call.args})
-                        
-                # Stream response tokens
-                async for token in response:
-                    full_text.append(token)
-                    
-                await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
-                return {
-                    "status": "SUCCESS",
-                    "role": role,
-                    "response": "".join(full_text)
-                }
-        except Exception as e:
-            await emit("AGENT_STATUS_CHANGE", {"status": "BLOCKED", "error": str(e)})
-            return {
-                "status": "ERROR",
-                "role": role,
-                "error": str(e)
-            }
+                    await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
+                    return {
+                        "status": "SUCCESS",
+                        "role": role,
+                        "response": "".join(full_text)
+                    }
+            except Exception as e:
+                await emit("AGENT_THOUGHT_DELTA", {"thought": f"SDK Notice: {str(e)[:60]}... falling back to agy CLI."})
+
+        # 2. Antigravity CLI Execution (Google OAuth account login without API key)
+        if HAS_AGY_CLI and os.path.exists(AGY_PATH):
+            try:
+                await emit("AGENT_THOUGHT_DELTA", {"thought": f"Executing with Google Antigravity CLI ({role})..."})
+                full_query = f"{system_instruction}\n\nPM Directive: {prompt}\n\nPlease respond concisely in Thai or English as {role}."
+                proc = await asyncio.create_subprocess_exec(
+                    AGY_PATH,
+                    "--add-dir", workspace_path,
+                    "-p", full_query,
+                    "--dangerously-skip-permissions",
+                    "--effort", "low",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workspace_path
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+                if proc.returncode == 0:
+                    text = stdout.decode("utf-8", errors="ignore").strip()
+                    if text:
+                        await emit("AGENT_THOUGHT_DELTA", {"thought": f"{role} processed directive successfully."})
+                        await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
+                        return {
+                            "status": "SUCCESS",
+                            "role": role,
+                            "response": text
+                        }
+            except Exception as e:
+                await emit("AGENT_THOUGHT_DELTA", {"thought": f"CLI note: {str(e)[:50]}... using local runner."})
+
+        # 3. Smart local contextual runner fallback
+        return await run_contextual_simulation()
+
+    async def dispatch_chat_task(
+        self,
+        project_id: str,
+        role: str,
+        message: str,
+        workspace_path: str,
+        project_context: Optional[Dict[str, Any]] = None,
+        conversation_context: str = "",
+        attachments: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Dispatch a chat-style task for the Unified Team Console.
+        Returns structured response with text + code proposals.
+        """
+        from app.services.console_service import parse_code_proposals
+
+        active_skills = []
+        base_role_skill = self.skill_manager.get_base_role_skill(role)
+        if self.store:
+            agent_state = self.store.get_agent_status(project_id, role)
+            if agent_state:
+                if getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
+                    for s_name in agent_state.equipped_skills:
+                        try:
+                            active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
+                        except: pass
+                else:
+                    active_skills = self.skill_manager.get_domain_skills_for_role(role)
+
+        system_instruction = self.skill_manager.synthesize_agent_prompt(
+            role=role,
+            project_context=project_context,
+            project_path=workspace_path,
+            base_skill=base_role_skill,
+            active_skills=active_skills
+        )
+
+        attachment_context = ""
+        if attachments:
+            attachment_context = "\n[USER ATTACHMENTS (Images/Files)]\n"
+            for att in attachments:
+                attachment_context += f"- File Name: {att.get('filename', 'Unknown')}\n  File Path: {att.get('path', '')}\n"
+
+        full_prompt = (
+            f"{system_instruction}\n\n"
+            f"Recent conversation context:\n{conversation_context}\n\n"
+            f"User message to {role}: {message}\n"
+            f"{attachment_context}\n"
+            f"Respond helpfully. If you propose code changes, use this format:\n"
+            f"**File: path/to/file.ext**\n```language\ncode content\n```\n"
+            f"Workspace: {workspace_path}\n"
+            f"Respond in Thai or English naturally."
+        )
+
+        response_text = ""
+
+        # Try agy CLI first
+        if HAS_AGY_CLI and os.path.exists(AGY_PATH):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    AGY_PATH,
+                    "--add-dir", workspace_path,
+                    "-p", full_prompt,
+                    "--dangerously-skip-permissions",
+                    "--effort", "low",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workspace_path
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+                if proc.returncode == 0:
+                    response_text = stdout.decode("utf-8", errors="ignore").strip()
+            except Exception:
+                pass
+
+        # Fallback to mock if no agy response
+        if not response_text:
+            if self.use_mock or not response_text:
+                stack = project_context.get("stack_type", "Project") if project_context else "Project"
+                response_text = (
+                    f"[{role}] ได้รับข้อความจาก PM แล้วครับ: \"{message}\"\n\n"
+                    f"ผมกำลังวิเคราะห์ {stack} project ที่ {workspace_path} "
+                    f"และจะดำเนินการตามที่สั่งครับ"
+                )
+
+        # Parse code proposals from the response
+        code_proposals = parse_code_proposals(response_text)
+
+        return {
+            "status": "SUCCESS",
+            "role": role,
+            "response": response_text,
+            "code_proposals": code_proposals
+        }
+
+

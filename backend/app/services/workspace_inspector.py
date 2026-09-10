@@ -125,11 +125,13 @@ class WorkspaceInspector:
                         meta["test_command"] = scripts["test"]
                     
                     deps = {**pkg_data.get("dependencies", {}), **pkg_data.get("devDependencies", {})}
-                    for framework in ["react", "next", "vue", "nuxt", "svelte", "express", "fastify", "tailwind", "vite"]:
+                    for framework in ["react", "next", "vue", "nuxt", "svelte", "express", "fastify", "tailwind", "vite", "three", "babylon", "phaser"]:
                         if any(framework in d.lower() for d in deps):
                             meta["frameworks"].append(framework)
                             
-                    if "next" in meta["frameworks"] or "react" in meta["frameworks"]:
+                    if "three" in meta["frameworks"]:
+                        meta["stack_type"] = "3D WebGL (Three.js + Vite)"
+                    elif "next" in meta["frameworks"] or "react" in meta["frameworks"]:
                         meta["stack_type"] = "Node.js / React"
                     elif "vue" in meta["frameworks"]:
                         meta["stack_type"] = "Node.js / Vue"
@@ -141,6 +143,17 @@ class WorkspaceInspector:
                         meta["test_runner"] = "jest"
             except Exception:
                 pass
+
+        # Check domain modules in src/ if present
+        src_path = os.path.join(path, "src")
+        if os.path.exists(src_path) and os.path.isdir(src_path):
+            try:
+                src_subdirs = [d for d in os.listdir(src_path) if os.path.isdir(os.path.join(src_path, d))]
+                if any(k in src_subdirs for k in ["race", "vehicle", "aero", "career", "suspension", "track", "differential"]):
+                    meta["purpose_summary"] = "3D Formula 1 Racing Game & Simulation featuring real-time vehicle dynamics (aerodynamics, suspension, brakes, differential), race management, tracks, and career mode."
+            except Exception:
+                pass
+
 
         # 4. Check Python
         reqs_path = os.path.join(path, "requirements.txt")
@@ -173,8 +186,11 @@ class WorkspaceInspector:
         try:
             for root, dirs, files in os.walk(path):
                 rel_root = os.path.relpath(root, path)
-                # Filter out ignore folders
-                dirs[:] = [d for d in dirs if d not in [".git", "node_modules", ".venv", "__pycache__", "dist", "build", ".next", ".cache"]]
+                # Filter out ignore folders and temp submodules
+                dirs[:] = [d for d in dirs if d not in [
+                    ".git", "node_modules", ".venv", "__pycache__", "dist", "build", 
+                    ".next", ".cache", "tmp_repos", ".vercel", ".agents", ".claude"
+                ]]
                 if rel_root != ".":
                     parts = rel_root.split(os.sep)
                     if len(parts) <= 2:
@@ -184,6 +200,7 @@ class WorkspaceInspector:
         except Exception:
             pass
         meta["directory_structure"] = dirs_found
+
 
         # Count visible files (max 200 for fast responsiveness)
         count = 0
@@ -203,138 +220,178 @@ class WorkspaceInspector:
 
     def generate_tailored_roster(self, meta: Dict[str, Any]) -> List[Dict[str, str]]:
         """
-        Dynamically tailors 5-7 specialized agent roles and system instructions
+        Dynamically tailors 3-6 specialized agent roles and system playbooks
         tailored directly to the detected codebase stack.
         """
         stack = meta.get("stack_type", "Generic")
-        frameworks = meta.get("frameworks", [])
+        frameworks = [f.lower() for f in meta.get("frameworks", [])]
+        purpose = (meta.get("purpose_summary") or "").lower()
+        has_docker = meta.get("has_docker", False)
+        test_runner = meta.get("test_runner") or "automated tests"
 
-        if "Node.js" in stack or "React" in stack:
+        is_ml = any(f in frameworks for f in ["torch", "pytorch", "tensorflow", "pandas", "numpy", "scipy", "scikit-learn", "keras"]) or "machine learning" in purpose or "deep learning" in purpose or "model training" in purpose
+
+        is_web_frontend = any(f in frameworks for f in ["react", "next", "vue", "nuxt", "svelte", "tailwind", "vite"]) or "React" in stack or "Vue" in stack or "frontend" in purpose
+
+        # Base Tech Lead (Always Present in All Rosters)
+        lead_agent = {
+            "role": "TechLead",
+            "title": f"Project Tech Lead ({stack})",
+            "description": f"Orchestrates overall engineering velocity for {stack}, conducts daily standups, and resolves blockers.",
+            "skill_name": "tech-lead",
+            "skill_tier": "stock"
+        }
+
+        if is_ml:
             return [
+                lead_agent,
                 {
-                    "role": "TechLead",
-                    "title": "Lead Software Engineer & Tech Lead",
-                    "description": f"Coordinates team execution for {stack} application, synthesizes status standups, resolves blockers, and reports directly to the PM."
-                },
-                {
-                    "role": "Architect",
-                    "title": "Lead Software Architect",
-                    "description": f"Decomposes requirements for {stack} application into modular components and state stores."
-                },
-                {
-                    "role": "Designer",
-                    "title": "UI/UX Designer",
-                    "description": "Creates design tokens, color palettes, responsive layouts, and component specifications."
-                },
-                {
-                    "role": "FrontendDev",
-                    "title": "Frontend & UI Engineer",
-                    "description": "Builds responsive React/HTML components, CSS design tokens, and client interactions."
+                    "role": "MLEngineer",
+                    "title": "Machine Learning & Model Engineer",
+                    "description": "Architects training pipelines, validates datasets, monitors loss, and tracks model checkpoints.",
+                    "skill_name": "ml-data-engineer",
+                    "skill_tier": "stock"
                 },
                 {
                     "role": "BackendDev",
-                    "title": "Full-Stack / API Dev",
-                    "description": "Implements server routes, data fetching, API integrations, and database logic."
+                    "title": "Python Data Systems Engineer",
+                    "description": f"Implements data pipelines, ETL routines, and server endpoints ({', '.join(frameworks)}).",
+                    "skill_name": "backend-dev",
+                    "skill_tier": "stock"
                 },
                 {
                     "role": "QATester",
-                    "title": "Test & Quality Engineer",
-                    "description": f"Runs automated test runners ({meta.get('test_runner') or 'npm test'}) and validates DOM/API outputs."
+                    "title": "Model Evaluation & Pytest Specialist",
+                    "description": f"Executes {test_runner} test suites, validates evaluation metrics, and prevents regressions.",
+                    "skill_name": "qa-engineer",
+                    "skill_tier": "stock"
                 },
                 {
-                    "role": "Reviewer",
-                    "title": "Code Quality & Security Auditor",
-                    "description": "Performs git diff audits, lint checks, security reviews, and release notes."
-                },
-                {
-                    "role": "DocWriter",
-                    "title": "Technical Writer",
-                    "description": "Maintains README documentation, setup guides, and component references."
+                    "role": "DevOps",
+                    "title": "MLOps & Compute Engineer",
+                    "description": "Manages CUDA runtime, Docker environments, and training execution pipelines.",
+                    "skill_name": "devops-engineer",
+                    "skill_tier": "stock"
                 }
             ]
-        elif "Python" in stack:
-            return [
+
+        elif is_web_frontend:
+            roster = [
+                lead_agent,
                 {
-                    "role": "TechLead",
-                    "title": "Staff Python Engineer & Tech Lead",
-                    "description": "Orchestrates Python backend workflow, conducts daily standup briefings, resolves blockers, and liaises with PM."
+                    "role": "FrontendDev",
+                    "title": "Frontend & UI Systems Specialist",
+                    "description": f"Builds interactive client components, design tokens, and state stores ({', '.join(frameworks)}).",
+                    "skill_name": "frontend-dev",
+                    "skill_tier": "stock"
+                },
+                {
+                    "role": "BackendDev",
+                    "title": "API & Core Systems Engineer",
+                    "description": "Builds REST/WebSocket endpoints, data persistence, and server logic.",
+                    "skill_name": "backend-dev",
+                    "skill_tier": "stock"
+                },
+                {
+                    "role": "QATester",
+                    "title": "Test Automation & QA Specialist",
+                    "description": f"Runs {test_runner} test suites, validates component DOM, and tests API responses.",
+                    "skill_name": "qa-engineer",
+                    "skill_tier": "stock"
+                }
+            ]
+            if has_docker:
+                roster.append({
+                    "role": "DevOps",
+                    "title": "Container & Build Engineer",
+                    "description": "Maintains Docker containers, multi-stage builds, and deployment configs.",
+                    "skill_name": "devops-engineer",
+                    "skill_tier": "stock"
+                })
+            else:
+                roster.append({
+                    "role": "Architect",
+                    "title": "Systems Solutions Architect",
+                    "description": "Decomposes feature requirements into modular components and schemas.",
+                    "skill_name": "architect",
+                    "skill_tier": "stock"
+                })
+            return roster
+
+        elif "Python" in stack:
+            # Backend/API-only Python Project (e.g. FastAPI/Flask without frontend)
+            roster = [
+                lead_agent,
+                {
+                    "role": "BackendDev",
+                    "title": "Python Core Systems Engineer",
+                    "description": f"Implements Python backend logic, endpoints ({', '.join(frameworks) if frameworks else 'FastAPI/REST'}), and services.",
+                    "skill_name": "backend-dev",
+                    "skill_tier": "stock"
                 },
                 {
                     "role": "Architect",
                     "title": "Python Solutions Architect",
-                    "description": "Plans data models, Pydantic schemas, dependency structures, and service boundaries."
-                },
-                {
-                    "role": "Designer",
-                    "title": "UI/UX Designer",
-                    "description": "Designs interface layouts, styling tokens, and visual component specifications."
-                },
-                {
-                    "role": "BackendDev",
-                    "title": "Python Core Engineer",
-                    "description": f"Implements Python backend logic, endpoints ({', '.join(frameworks) if frameworks else 'FastAPI/REST'}), and services."
-                },
-                {
-                    "role": "FrontendDev",
-                    "title": "Interface & Client Specialist",
-                    "description": "Builds templates, client scripts, frontend integration, and dashboard views."
+                    "description": "Plans data models, Pydantic schemas, dependency structures, and service boundaries.",
+                    "skill_name": "architect",
+                    "skill_tier": "stock"
                 },
                 {
                     "role": "QATester",
                     "title": "Pytest Automation Engineer",
-                    "description": f"Executes pytest test suites, catches regressions, and executes self-healing test loops."
-                },
-                {
-                    "role": "Reviewer",
-                    "title": "Staff Code Reviewer",
-                    "description": "Verifies PEP8 compliance, async performance, type annotations, and git diffs."
-                },
-                {
-                    "role": "DocWriter",
-                    "title": "Documentation Engineer",
-                    "description": "Updates docstrings, API specifications, and usage instructions."
+                    "description": f"Executes pytest test suites, catches regressions, and executes self-healing test loops.",
+                    "skill_name": "qa-engineer",
+                    "skill_tier": "stock"
                 }
             ]
+            if has_docker:
+                roster.append({
+                    "role": "DevOps",
+                    "title": "Docker & Infrastructure Specialist",
+                    "description": "Configures Docker containers, environment configurations, and deployment pipelines.",
+                    "skill_name": "devops-engineer",
+                    "skill_tier": "stock"
+                })
+            else:
+                roster.append({
+                    "role": "Security",
+                    "title": "Security & Vulnerability Auditor",
+                    "description": "Audits authentication, dependencies, and endpoint security.",
+                    "skill_name": "security-auditor",
+                    "skill_tier": "stock"
+                })
+            return roster
+
         else:
+            # General / Polyglot Stack
             return [
-                {
-                    "role": "TechLead",
-                    "title": "Principal Engineer & Tech Lead",
-                    "description": "Supervises project architecture, monitors team health, delivers standup briefings, and coordinates with PM."
-                },
-                {
-                    "role": "Architect",
-                    "title": "Systems Architect",
-                    "description": "Analyzes codebase layout and breaks high-level features into discrete tasks."
-                },
-                {
-                    "role": "Designer",
-                    "title": "UI/UX Designer",
-                    "description": "Creates design specifications, color systems, and layout blueprints."
-                },
-                {
-                    "role": "FrontendDev",
-                    "title": "UI Engineer",
-                    "description": "Implements layouts and user interface components."
-                },
+                lead_agent,
                 {
                     "role": "BackendDev",
                     "title": "Core Systems Engineer",
-                    "description": "Implements business logic, algorithms, and file operations."
+                    "description": "Implements business logic, algorithms, and file operations.",
+                    "skill_name": "backend-dev",
+                    "skill_tier": "stock"
+                },
+                {
+                    "role": "FrontendDev",
+                    "title": "UI & Client Engineer",
+                    "description": "Implements user interface components and visual presentation.",
+                    "skill_name": "frontend-dev",
+                    "skill_tier": "stock"
                 },
                 {
                     "role": "QATester",
                     "title": "Verification & QA Specialist",
-                    "description": "Executes automated tests and regression verification."
+                    "description": "Executes automated tests and regression verification.",
+                    "skill_name": "qa-engineer",
+                    "skill_tier": "stock"
                 },
                 {
-                    "role": "Reviewer",
-                    "title": "Code Reviewer",
-                    "description": "Performs code audits, security checks, and sprint release summaries."
-                },
-                {
-                    "role": "DocWriter",
-                    "title": "Documentation Writer",
-                    "description": "Updates documentation and changelogs."
+                    "role": "DevOps",
+                    "title": "Infrastructure & Build Specialist",
+                    "description": "Configures build tools, scripts, and runtime environment.",
+                    "skill_name": "devops-engineer",
+                    "skill_tier": "stock"
                 }
             ]

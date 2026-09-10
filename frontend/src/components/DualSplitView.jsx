@@ -6,6 +6,7 @@ export default function DualSplitView({
   tasksByProject, 
   liveStreamsByProject, 
   onDeleteProject,
+  onRequestDelete,
   onOpenAddProject,
   onDispatchDirective,
   onOpenStandup
@@ -42,17 +43,20 @@ export default function DualSplitView({
                 <button
                   className="view-btn"
                   onClick={() => {
-                    if (window.confirm(`Disconnect and remove project "${project.name}"?`)) {
+                    if (onRequestDelete) {
+                      onRequestDelete(project);
+                    } else {
                       onDeleteProject(project.project_id);
                     }
                   }}
                   title="Remove project"
-                  style={{ color: 'var(--text-muted)', padding: '4px 6px' }}
+                  style={{ color: 'var(--accent-coral)', borderColor: 'rgba(239, 68, 68, 0.25)', padding: '4px 6px' }}
                 >
                   <Trash2 size={13} />
                 </button>
               </div>
             </div>
+
 
             {/* Kanban Overview */}
             <div className="kanban-section">
