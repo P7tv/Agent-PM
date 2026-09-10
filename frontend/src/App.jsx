@@ -1,12 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Building2, Columns, Focus, Radio, Plus, RefreshCw } from 'lucide-react';
+import { 
+  Building2, 
+  Columns, 
+  Focus, 
+  Sun, 
+  Moon, 
+  Layers,
+  Plus
+} from 'lucide-react';
 import PMCommandBar from './components/PMCommandBar';
 import OfficeFloorView from './components/OfficeFloorView';
 import DualSplitView from './components/DualSplitView';
 import FocusRoomView from './components/FocusRoomView';
 import { DecisionGateModal, WhisperModal } from './components/DecisionGateModal';
+import AddProjectModal from './components/AddProjectModal';
 
 export default function App() {
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('theme') || 'dark';
+  });
   const [viewMode, setViewMode] = useState('OFFICE'); // OFFICE, SPLIT, FOCUS
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -18,9 +30,20 @@ export default function App() {
 
   const [activeApproval, setActiveApproval] = useState(null);
   const [whisperTarget, setWhisperTarget] = useState(null); // { projectId, role }
+  const [isAddProjectOpen, setIsAddProjectOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
 
   const socketRef = useRef(null);
+
+  // Sync theme with DOM and localStorage
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
 
   // Fetch projects and initial data
   const fetchData = async () => {
@@ -28,32 +51,6 @@ export default function App() {
       let res = await fetch('/api/projects');
       let data = await res.json();
       
-      // If no projects, bootstrap 2 default projects
-      if (data.length === 0) {
-        await fetch('/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project_id: 'alpha-app',
-            name: 'Project Alpha (Core App)',
-            workspace_path: '/Users/panpan/My PM/projects/alpha',
-            auto_pilot: true
-          })
-        });
-        await fetch('/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project_id: 'beta-api',
-            name: 'Project Beta (Next Service)',
-            workspace_path: '/Users/panpan/My PM/projects/beta',
-            auto_pilot: false
-          })
-        });
-        res = await fetch('/api/projects');
-        data = await res.json();
-      }
-
       setProjects(data);
       if (data.length > 0 && !activeProjectId) {
         setActiveProjectId(data[0].project_id);
@@ -82,7 +79,7 @@ export default function App() {
 
       setAgentStates((prev) => ({ ...prev, [projId]: agents }));
       setTasksByProject((prev) => ({ ...prev, [projId]: tasks }));
-      if (approvals.length > 0) {
+      if (approvals && approvals.length > 0) {
         setActiveApproval(approvals[0]);
       }
     } catch (e) {
@@ -183,6 +180,21 @@ export default function App() {
     });
   };
 
+  const handleAddProject = async (projectData) => {
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(projectData)
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Could not add project');
+    }
+    const created = await res.json();
+    await fetchData();
+    setActiveProjectId(created.project_id);
+  };
+
   const handleFocusProject = (projectId) => {
     setFocusedProjectId(projectId);
     setViewMode('FOCUS');
@@ -195,44 +207,71 @@ export default function App() {
       {/* Top Header */}
       <header className="app-header">
         <div className="brand-logo">
-          <div className="brand-icon">🏢</div>
+          <div className="brand-icon">
+            <Layers size={20} />
+          </div>
           <div>
-            <h1 className="brand-title">ANTIGRAVITY AI OFFICE</h1>
-            <div className="brand-subtitle">MULTI-AGENT PM COMMAND CENTER</div>
+            <h1 className="brand-title">Antigravity PM Workspace</h1>
+            <div className="brand-subtitle">MULTI-AGENT ORCHESTRATION</div>
           </div>
         </div>
 
-        {/* View Switcher */}
-        <div className="view-switcher">
-          <button
-            className={`view-btn ${viewMode === 'OFFICE' ? 'active' : ''}`}
-            onClick={() => setViewMode('OFFICE')}
-          >
-            <Building2 size={15} />
-            <span>OFFICE FLOOR</span>
-          </button>
-          <button
-            className={`view-btn ${viewMode === 'SPLIT' ? 'active' : ''}`}
-            onClick={() => setViewMode('SPLIT')}
-          >
-            <Columns size={15} />
-            <span>DUAL SPLIT</span>
-          </button>
-          {focusedProject && (
+        {/* Navigation & Controls */}
+        <div className="header-actions">
+          {/* View Switcher */}
+          <div className="view-switcher">
             <button
-              className={`view-btn ${viewMode === 'FOCUS' ? 'active' : ''}`}
-              onClick={() => setViewMode('FOCUS')}
+              className={`view-btn ${viewMode === 'OFFICE' ? 'active' : ''}`}
+              onClick={() => setViewMode('OFFICE')}
             >
-              <Focus size={15} />
-              <span>WAR ROOM: {focusedProject.name}</span>
+              <Building2 size={14} />
+              <span>Office Floor</span>
+            </button>
+            <button
+              className={`view-btn ${viewMode === 'SPLIT' ? 'active' : ''}`}
+              onClick={() => setViewMode('SPLIT')}
+            >
+              <Columns size={14} />
+              <span>Dual Split</span>
+            </button>
+            {focusedProject && (
+              <button
+                className={`view-btn ${viewMode === 'FOCUS' ? 'active' : ''}`}
+                onClick={() => setViewMode('FOCUS')}
+              >
+                <Focus size={14} />
+                <span>{focusedProject.name}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Add Project Button (up to 2) */}
+          {projects.length < 2 && (
+            <button
+              className="view-btn"
+              onClick={() => setIsAddProjectOpen(true)}
+              style={{ border: '1px dashed var(--border-medium)', color: 'var(--primary)' }}
+            >
+              <Plus size={14} />
+              <span>Add Project</span>
             </button>
           )}
-        </div>
 
-        {/* Real-time indicator */}
-        <div className="status-pill">
-          <div className={`status-dot ${wsConnected ? '' : 'disconnected'}`} />
-          <span>{wsConnected ? 'ANTIGRAVITY ONLINE' : 'CONNECTING...'}</span>
+          {/* Theme Toggle Button */}
+          <button
+            className="theme-toggle-btn"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
+            aria-label="Toggle theme"
+          >
+            {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+          </button>
+
+          {/* Real-time indicator */}
+          <div className="status-pill">
+            <div className="status-dot" />
+            <span>{wsConnected ? 'Live' : 'Connecting'}</span>
+          </div>
         </div>
       </header>
 
@@ -285,6 +324,12 @@ export default function App() {
         whisperTarget={whisperTarget}
         onClose={() => setWhisperTarget(null)}
         onSendWhisper={handleSendWhisper}
+      />
+
+      <AddProjectModal
+        isOpen={isAddProjectOpen}
+        onClose={() => setIsAddProjectOpen(false)}
+        onAddProject={handleAddProject}
       />
     </div>
   );

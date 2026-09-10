@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Zap, ShieldCheck } from 'lucide-react';
+import { Send, TerminalSquare } from 'lucide-react';
 
 export default function PMCommandBar({ projects, activeProjectId, onSelectProject, onDispatchDirective }) {
   const [directive, setDirective] = useState('');
@@ -17,8 +17,8 @@ export default function PMCommandBar({ projects, activeProjectId, onSelectProjec
   return (
     <form className="pm-command-bar" onSubmit={handleSubmit}>
       <div className="pm-badge">
-        <Zap size={14} />
-        <span>PM DIRECTIVE</span>
+        <TerminalSquare size={14} />
+        <span>DIRECTIVE</span>
       </div>
 
       <select
@@ -28,7 +28,7 @@ export default function PMCommandBar({ projects, activeProjectId, onSelectProjec
       >
         {projects.map((p) => (
           <option key={p.project_id} value={p.project_id}>
-            {p.name} ({p.auto_pilot ? '⚡ Auto-Pilot' : '🛡️ Gate Mode'})
+            {p.name} ({p.auto_pilot ? 'Auto-Pilot' : 'Gate Mode'})
           </option>
         ))}
       </select>
@@ -36,7 +36,7 @@ export default function PMCommandBar({ projects, activeProjectId, onSelectProjec
       <input
         type="text"
         className="pm-input"
-        placeholder="Type high-level product requirement... (e.g., 'Add OAuth2 login flow with Google and dark mode profile page')"
+        placeholder="Enter high-level requirement... (e.g., 'Implement user authentication with JWT and email verification')"
         value={directive}
         onChange={(e) => setDirective(e.target.value)}
         disabled={isSubmitting || projects.length === 0}
@@ -47,8 +47,8 @@ export default function PMCommandBar({ projects, activeProjectId, onSelectProjec
         className="dispatch-btn"
         disabled={isSubmitting || !directive.trim() || projects.length === 0}
       >
-        <Send size={15} />
-        <span>{isSubmitting ? 'DISPATCHING...' : 'DISPATCH TEAM'}</span>
+        <Send size={14} />
+        <span>{isSubmitting ? 'Dispatching...' : 'Dispatch'}</span>
       </button>
     </form>
   );
