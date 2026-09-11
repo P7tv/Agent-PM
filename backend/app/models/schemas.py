@@ -128,3 +128,13 @@ class SkillRemoveRequest(BaseModel):
 class SetSkillModeRequest(BaseModel):
     mode: str  # "AUTO" or "MANUAL"
 
+class CustomAgentCreateRequest(BaseModel):
+    role: str = Field(..., min_length=2, max_length=50)
+    title: str = Field(..., min_length=2, max_length=80)
+    description: str = Field(..., min_length=5, max_length=300)
+    skill_name: Optional[str] = None
+    skill_tier: Optional[str] = "stock"
+
+class AutoGenerateRosterRequest(BaseModel):
+    replace_existing: bool = True
+

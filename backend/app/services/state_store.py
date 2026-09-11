@@ -279,6 +279,34 @@ class StateStore:
     def list_agents(self, project_id: str) -> List[AgentState]:
         return self.get_all_agent_states(project_id)
 
+    def add_agent(
+        self,
+        project_id: str,
+        role: str,
+        title: str,
+        description: str,
+        skill_name: Optional[str] = None,
+        skill_tier: Optional[str] = "stock"
+    ) -> AgentState:
+        self.set_agent_status(
+            project_id=project_id,
+            role=role,
+            status="IDLE",
+            thought=description,
+            skill_name=skill_name,
+            skill_tier=skill_tier or "stock",
+            skill_title=title
+        )
+        return self.get_agent_status(project_id, role)
+
+    def delete_agent(self, project_id: str, role: str) -> bool:
+        if role == "TechLead":
+            return False
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM agent_states WHERE project_id = ? AND role = ?", (project_id, role))
+            conn.commit()
+            return cur.rowcount > 0
+
     def create_approval_request(self, project_id: str, gate_type: str, summary: str) -> ApprovalRequest:
         req = ApprovalRequest(project_id=project_id, gate_type=gate_type, summary=summary)
         with self._get_conn() as conn:
