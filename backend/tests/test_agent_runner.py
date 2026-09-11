@@ -23,3 +23,32 @@ async def test_agent_runner_streaming_events():
     assert "AGENT_STATUS_CHANGE" in event_types
     assert result["status"] == "SUCCESS"
     assert len(result["response"]) > 0
+
+@pytest.mark.asyncio
+async def test_agent_runner_returns_token_and_backend_metadata():
+    runner = AgentRunner(use_mock=True)
+    result = await runner.dispatch_agent_task(
+        project_id="test-p1",
+        role="Architect",
+        prompt="Plan a todo app",
+        workspace_path="/tmp"
+    )
+    assert "tokens_used" in result
+    assert "backend_used" in result
+    assert result["backend_used"] in ("mock", "cli", "sdk")
+    assert isinstance(result["tokens_used"], int)
+
+@pytest.mark.asyncio
+async def test_dispatch_chat_task_returns_token_and_backend_metadata():
+    runner = AgentRunner(use_mock=True)
+    result = await runner.dispatch_chat_task(
+        project_id="test-p1",
+        role="TechLead",
+        message="hello",
+        workspace_path="/tmp"
+    )
+    assert "tokens_used" in result
+    assert "backend_used" in result
+    assert result["backend_used"] in ("mock", "cli", "sdk")
+    assert isinstance(result["tokens_used"], int)
+

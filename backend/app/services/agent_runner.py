@@ -93,7 +93,9 @@ class AgentRunner:
             return {
                 "status": "SUCCESS",
                 "role": role,
-                "response": f"Completed tasks for: {prompt}"
+                "response": f"Completed tasks for: {prompt}",
+                "tokens_used": 0,
+                "backend_used": "mock"
             }
 
         # If explicit test mock requested, run simulation
@@ -138,14 +140,22 @@ class AgentRunner:
                     if hasattr(response, "tool_calls"):
                         async for tool_call in response.tool_calls:
                             await emit("TOOL_EXECUTION_START", {"tool": tool_call.name, "args": tool_call.args})
+                    tokens_used = 0
+                    if hasattr(response, "usage_metadata"):
+                        tokens_used = getattr(response.usage_metadata, "total_token_count", 0) or 0
                     async for token in response:
                         full_text.append(token)
+                    resp_str = "".join(full_text)
+                    if tokens_used == 0:
+                        tokens_used = len(resp_str) // 4
                         
                     await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
                     return {
                         "status": "SUCCESS",
                         "role": role,
-                        "response": "".join(full_text)
+                        "response": resp_str,
+                        "tokens_used": tokens_used,
+                        "backend_used": "sdk"
                     }
             except Exception as e:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": f"SDK Notice: {str(e)[:60]}... falling back to agy CLI."})
@@ -194,10 +204,13 @@ class AgentRunner:
                         except Exception:
                             pass
                         await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
+                        estimated_tokens = len(text) // 4
                         return {
                             "status": "SUCCESS",
                             "role": role,
-                            "response": text
+                            "response": text,
+                            "tokens_used": estimated_tokens,
+                            "backend_used": "cli"
                         }
             except Exception as e:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": f"CLI note: {str(e)[:50]}... using local runner."})
@@ -260,9 +273,11 @@ class AgentRunner:
         )
 
         response_text = ""
+        backend_used = "mock"
+        tokens_used = 0
 
-        # Try agy CLI first
-        if HAS_AGY_CLI and os.path.exists(AGY_PATH):
+        # Try agy CLI first if not in mock mode
+        if not self.use_mock and HAS_AGY_CLI and os.path.exists(AGY_PATH):
             try:
                 cmd_args = [AGY_PATH, "--add-dir", workspace_path, "-p", full_prompt, "--dangerously-skip-permissions", "--effort", "low"]
                 if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):
@@ -276,18 +291,22 @@ class AgentRunner:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
                 if proc.returncode == 0:
                     response_text = stdout.decode("utf-8", errors="ignore").strip()
+                    if response_text:
+                        backend_used = "cli"
+                        tokens_used = len(response_text) // 4
             except Exception:
                 pass
 
         # Fallback to mock if no agy response
         if not response_text:
-            if self.use_mock or not response_text:
-                stack = project_context.get("stack_type", "Project") if project_context else "Project"
-                response_text = (
-                    f"[{role}] ได้รับข้อความจาก PM แล้วครับ: \"{message}\"\n\n"
-                    f"ผมกำลังวิเคราะห์ {stack} project ที่ {workspace_path} "
-                    f"และจะดำเนินการตามที่สั่งครับ"
-                )
+            stack = project_context.get("stack_type", "Project") if project_context else "Project"
+            response_text = (
+                f"[{role}] ได้รับข้อความจาก PM แล้วครับ: \"{message}\"\n\n"
+                f"ผมกำลังวิเคราะห์ {stack} project ที่ {workspace_path} "
+                f"และจะดำเนินการตามที่สั่งครับ"
+            )
+            backend_used = "mock"
+            tokens_used = 0
 
         # Parse code proposals from the response
         code_proposals = parse_code_proposals(response_text)
@@ -296,7 +315,9 @@ class AgentRunner:
             "status": "SUCCESS",
             "role": role,
             "response": response_text,
-            "code_proposals": code_proposals
+            "code_proposals": code_proposals,
+            "tokens_used": tokens_used,
+            "backend_used": backend_used
         }
 
 
