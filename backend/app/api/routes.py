@@ -150,6 +150,65 @@ async def cancel_queue_directive(project_id: str, queue_id: str):
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "cancelled_id": queue_id})
     return {"status": "CANCELLED", "queue_id": queue_id}
 
+@router.get("/projects/{project_id}/files")
+def get_project_files(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    ws_path = p.workspace_path
+    if not ws_path or not os.path.exists(ws_path):
+        return {"files": []}
+    
+    files = []
+    IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".pytest_cache", ".venv", "venv", ".idea", ".vscode", "dist", "build"}
+    
+    real_ws = os.path.realpath(ws_path)
+    try:
+        for root, dirs, filenames in os.walk(real_ws):
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+            for d in dirs:
+                full_d = os.path.join(root, d)
+                rel_d = os.path.relpath(full_d, real_ws).replace("\\", "/")
+                files.append({"name": d, "path": rel_d, "is_dir": True})
+            for f in filenames:
+                if f.startswith('.'):
+                    continue
+                full_f = os.path.join(root, f)
+                rel_f = os.path.relpath(full_f, real_ws).replace("\\", "/")
+                files.append({"name": f, "path": rel_f, "is_dir": False})
+            if len(files) > 500:
+                break
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    files.sort(key=lambda x: (not x["is_dir"], x["path"].lower()))
+    return {"files": files}
+
+@router.get("/projects/{project_id}/files/content")
+def get_project_file_content(project_id: str, path: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    ws_path = p.workspace_path
+    if not ws_path or not os.path.exists(ws_path):
+        raise HTTPException(status_code=404, detail="Workspace path not found")
+    
+    real_ws = os.path.realpath(ws_path)
+    target_path = os.path.realpath(os.path.join(real_ws, path))
+    
+    # Path traversal protection
+    if not target_path.startswith(real_ws) or not os.path.isfile(target_path):
+        raise HTTPException(status_code=400, detail="Invalid file path or access denied")
+    
+    try:
+        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(100000)
+        return {"path": path, "content": content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/projects/{project_id}/approvals")
 def get_project_approvals(project_id: str):
     return store.get_pending_approvals(project_id)
