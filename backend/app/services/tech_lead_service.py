@@ -1,5 +1,6 @@
 import time
 import os
+import json
 import shutil
 import subprocess
 from typing import Dict, Any, List
@@ -121,13 +122,16 @@ class TechLeadService:
                     f"Explain what the project actually is, what it does, its key systems and technologies, and current status. "
                     f"Be helpful, informative, and avoid stiff template phrasing. (2-3 paragraphs max)"
                 )
+                cmd_args = [agy_path, "-p", ai_prompt, "--effort", "low"]
+                if os.name == "nt" and agy_path.lower().endswith((".cmd", ".bat")):
+                    cmd_args = ["cmd.exe", "/c"] + cmd_args
+
                 res = subprocess.run(
-                    [agy_path, "-p", ai_prompt, "--effort", "low"],
+                    cmd_args,
                     capture_output=True,
                     text=True,
-                    timeout=15.0,
-                    cwd=workspace if os.path.exists(workspace) else None,
-                    shell=os.name == "nt"
+                    timeout=35.0,
+                    cwd=workspace if os.path.exists(workspace) else None
                 )
                 if res.returncode == 0 and res.stdout.strip():
                     return {
@@ -192,5 +196,103 @@ class TechLeadService:
             "role": "TechLead",
             "message": reply,
             "timestamp": time.time()
+        }
+
+    def auto_generate_roster(self, project_id: str, replace_existing: bool = True) -> Dict[str, Any]:
+        meta = self.store.get_project_metadata(project_id)
+        project = self.store.get_project(project_id)
+        if not project:
+            raise KeyError(f"Project {project_id} not found")
+        if not meta:
+            meta = self.pm.inspector._inspect_codebase(project.workspace_path)
+
+        tailored_roles = []
+
+        # 1. Attempt LLM generation via agy if active
+        default_win_agy = os.path.expanduser("~/AppData/Local/agy/bin/agy.exe")
+        agy_path = (
+            os.environ.get("AGY_PATH")
+            or (default_win_agy if os.path.exists(default_win_agy) else None)
+            or shutil.which("agy")
+            or shutil.which("agy.cmd")
+            or shutil.which("agy.exe")
+            or os.path.expanduser("~/.local/bin/agy")
+            or os.path.expanduser("~/AppData/Local/Programs/agy/agy.exe")
+        )
+        has_agy = bool(agy_path and os.path.exists(agy_path))
+        if has_agy and not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                dirs_preview = ", ".join([d.rstrip('/') for d in meta.get("directory_structure", []) if not d.startswith('.')][:6])
+                prompt = (
+                    f"Analyze this software project and produce a tailored engineering team of 3 to 5 specialized sub-agents (do NOT include TechLead).\n"
+                    f"Project Context:\n"
+                    f"- Name: {project.name}\n"
+                    f"- Stack: {meta.get('stack_type')}\n"
+                    f"- Frameworks: {meta.get('frameworks')}\n"
+                    f"- Purpose: {meta.get('purpose_summary')}\n"
+                    f"- Key directories: {dirs_preview}\n\n"
+                    f"Output strictly a JSON array (no markdown code fences) of objects:\n"
+                    f'[{{"role": "PascalCaseRole", "title": "Human Readable Title", "description": "Specific responsibility", "skill_name": "relevant-skill"}}]\n'
+                )
+                cmd_args = [agy_path, "-p", prompt, "--effort", "low"]
+                if os.name == "nt" and agy_path.lower().endswith((".cmd", ".bat")):
+                    cmd_args = ["cmd.exe", "/c"] + cmd_args
+
+                res = subprocess.run(
+                    cmd_args,
+                    capture_output=True,
+                    text=True,
+                    timeout=30.0,
+                    cwd=project.workspace_path if os.path.exists(project.workspace_path) else None
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    raw = res.stdout.strip()
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[1].rsplit("\n", 1)[0]
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list) and len(parsed) >= 2:
+                        tailored_roles = parsed
+            except Exception:
+                tailored_roles = []
+
+        # 2. Fallback to Deep Codebase Inspection Heuristics
+        if not tailored_roles:
+            raw_roster = self.pm.inspector.generate_tailored_roster(meta)
+            tailored_roles = [r for r in raw_roster if r.get("role") != "TechLead"]
+
+        # 3. Apply to StateStore
+        if replace_existing:
+            current_agents = self.store.get_all_agent_states(project_id)
+            for a in current_agents:
+                if a.role != "TechLead":
+                    self.store.delete_agent(project_id, a.role)
+
+        for agent in tailored_roles:
+            role = agent.get("role")
+            if not role or role == "TechLead":
+                continue
+            self.store.add_agent(
+                project_id=project_id,
+                role=role,
+                title=agent.get("title") or role,
+                description=agent.get("description") or f"Specialized for {meta.get('stack_type')}",
+                skill_name=agent.get("skill_name"),
+                skill_tier=agent.get("skill_tier", "stock")
+            )
+
+        # Update TechLead thought
+        self.store.set_agent_status(
+            project_id=project_id,
+            role="TechLead",
+            status="IDLE",
+            thought=f"Coordinating tailored {meta.get('stack_type', 'Project')} engineering team with {len(tailored_roles)} specialists."
+        )
+
+        all_agents = self.store.get_all_agent_states(project_id)
+        return {
+            "status": "SUCCESS",
+            "project_id": project_id,
+            "agents": [a.model_dump() for a in all_agents],
+            "summary": f"Tailored team of {len(all_agents)} agents generated for {meta.get('stack_type', 'Project')}."
         }
 

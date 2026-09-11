@@ -245,6 +245,8 @@ class WorkspaceInspector:
 
         is_ml = any(f in frameworks for f in ["torch", "pytorch", "tensorflow", "pandas", "numpy", "scipy", "scikit-learn", "keras"]) or "machine learning" in purpose or "deep learning" in purpose or "model training" in purpose
 
+        is_3d_game = any(f in frameworks for f in ["three", "babylon", "phaser"]) or "3d" in stack.lower() or any(k in purpose for k in ["racing", "game", "physics", "simulation", "vehicle", "aero"])
+
         is_web_frontend = any(f in frameworks for f in ["react", "next", "vue", "nuxt", "svelte", "tailwind", "vite"]) or "React" in stack or "Vue" in stack or "frontend" in purpose
 
         # Base Tech Lead (Always Present in All Rosters)
@@ -256,7 +258,40 @@ class WorkspaceInspector:
             "skill_tier": "stock"
         }
 
-        if is_ml:
+        if is_3d_game:
+            return [
+                lead_agent,
+                {
+                    "role": "GamePhysicsDev",
+                    "title": "Physics & Vehicle Dynamics Engineer",
+                    "description": "Simulates aerodynamic forces, suspension, tire grip, and collision geometry.",
+                    "skill_name": "systematic-debugger",
+                    "skill_tier": "stock"
+                },
+                {
+                    "role": "ThreeJsSceneDev",
+                    "title": "3D Graphics & WebGL Scene Specialist",
+                    "description": "Constructs 3D meshes, textures, shader materials, lighting, and camera controllers.",
+                    "skill_name": "frontend-dev",
+                    "skill_tier": "stock"
+                },
+                {
+                    "role": "RaceLogicDev",
+                    "title": "Game Loop & Simulation Systems Engineer",
+                    "description": "Coordinates game loop, race timing, telemetry state, and competitor simulation.",
+                    "skill_name": "backend-dev",
+                    "skill_tier": "stock"
+                },
+                {
+                    "role": "QATester",
+                    "title": "WebGL Frame & Physics QA Specialist",
+                    "description": f"Executes {test_runner} test suites, validates frame budgeting, and physics bounds.",
+                    "skill_name": "qa-engineer",
+                    "skill_tier": "stock"
+                }
+            ]
+
+        elif is_ml:
             return [
                 lead_agent,
                 {
