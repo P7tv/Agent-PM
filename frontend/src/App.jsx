@@ -30,6 +30,8 @@ export default function App() {
   const [tasksByProject, setTasksByProject] = useState({}); // { [projId]: [TaskItem] }
   const [liveStreams, setLiveStreams] = useState({}); // { [projId]: [logs] }
   const [consoleHistories, setConsoleHistories] = useState({}); // { [projId]: [ConsoleMessage] }
+  const [timelineEvents, setTimelineEvents] = useState({}); // { [projId]: [event] }
+  const [sprintsByProject, setSprintsByProject] = useState({}); // { [projId]: [SprintRecord] }
 
   const [activeApproval, setActiveApproval] = useState(null);
   const [standupProject, setStandupProject] = useState(null); // { projectId, projectName }
@@ -61,13 +63,24 @@ export default function App() {
         setActiveProjectId(data[0].project_id);
       }
 
-      // Fetch agents, tasks, and console history for each project
+      // Fetch agents, tasks, console history, and sprints for each project
       for (const p of data) {
         fetchProjectDetails(p.project_id);
         fetchConsoleHistory(p.project_id);
+        fetchSprints(p.project_id);
       }
     } catch (err) {
       console.error('Error fetching initial data:', err);
+    }
+  };
+
+  const fetchSprints = async (projId) => {
+    try {
+      const res = await fetch(`/api/projects/${projId}/sprints`);
+      const sprints = await res.json();
+      setSprintsByProject((prev) => ({ ...prev, [projId]: sprints }));
+    } catch (e) {
+      console.error(`Error loading sprints for ${projId}:`, e);
     }
   };
 
@@ -132,6 +145,17 @@ export default function App() {
             }));
           }
 
+          // Append to timeline events
+          if (projId) {
+            setTimelineEvents((prev) => ({
+              ...prev,
+              [projId]: [
+                ...(prev[projId] || []).slice(-199),
+                { type: evType, data, timestamp: data.timestamp || Date.now() / 1000 }
+              ]
+            }));
+          }
+
           // Handle state updates
           if (evType === 'AGENT_STATE_UPDATE' || evType === 'AGENT_STATUS_CHANGE') {
             fetchProjectDetails(projId);
@@ -147,6 +171,8 @@ export default function App() {
             setActiveApproval(null);
           } else if (evType === 'PROJECT_DELETED') {
             fetchData();
+          } else if (['SPRINT_STARTED', 'PIPELINE_COMPLETED', 'PIPELINE_REJECTED', 'PIPELINE_HALTED'].includes(evType)) {
+            if (projId) fetchSprints(projId);
           } else if (evType === 'CONSOLE_MESSAGE') {
             // Append console message to the correct project's history
             if (projId) {
@@ -271,6 +297,12 @@ export default function App() {
     setViewMode('FOCUS');
   };
 
+  const handleRerunSprint = (directive) => {
+    if (focusedProjectId) {
+      handleDispatchDirective(focusedProjectId, directive);
+    }
+  };
+
   const focusedProject = projects.find((p) => p.project_id === focusedProjectId);
 
   return (
@@ -390,6 +422,9 @@ export default function App() {
             tasks={tasksByProject[focusedProjectId] || []}
             liveStream={liveStreams[focusedProjectId] || []}
             consoleHistory={consoleHistories[focusedProjectId] || []}
+            timelineEvents={timelineEvents[focusedProjectId] || []}
+            sprints={sprintsByProject[focusedProjectId] || []}
+            onRerunSprint={handleRerunSprint}
             onBack={() => setViewMode('OFFICE')}
             onSendConsoleMessage={handleSendConsoleMessage}
             onSendWhisper={handleSendWhisper}

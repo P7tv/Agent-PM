@@ -29,16 +29,24 @@ import {
   Paperclip,
   Image as ImageIcon,
   Settings,
-  User
+  User,
+  History,
+  FolderTree
 } from 'lucide-react';
 import { DecisionGateModal } from './DecisionGateModal';
 import SkillStoreModal from './SkillStoreModal';
 import GitCommitGraph from './GitCommitGraph';
+import SprintHistoryPanel from './SprintHistoryPanel';
+import ActivityTimeline from './ActivityTimeline';
+import WorkspaceFileBrowser from './WorkspaceFileBrowser';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 const TABS = [
   { id: 'team-console', label: 'Team Console', icon: MessageSquare },
+  { id: 'timeline', label: 'Activity Feed', icon: Activity },
+  { id: 'sprints', label: 'Sprint History', icon: History },
+  { id: 'files', label: 'Workspace Files', icon: FolderTree },
   { id: 'terminal', label: 'Terminal & Tests', icon: Terminal },
   { id: 'git-diff', label: 'File Changes', icon: GitBranch },
   { id: 'skills', label: 'Playbooks & Skills', icon: BookOpen },
@@ -69,6 +77,9 @@ export default function FocusRoomView({
   tasks, 
   liveStream, 
   consoleHistory,
+  timelineEvents = [],
+  sprints = [],
+  onRerunSprint,
   onBack, 
   onAgentClick, 
   onSendWhisper,
@@ -514,7 +525,7 @@ export default function FocusRoomView({
           <div style={{
             background: 'var(--bg-surface)',
             borderRadius: '0 0 var(--radius-lg) var(--radius-lg)',
-            padding: activeTab === 'team-console' ? '0' : '20px',
+            padding: ['team-console', 'timeline', 'sprints', 'files'].includes(activeTab) ? '0' : '20px',
             border: '1px solid var(--border-subtle)',
             minHeight: '480px',
             flex: 1,
@@ -633,6 +644,21 @@ export default function FocusRoomView({
                   />
                 </div>
               </div>
+            )}
+
+            {/* ═══ ACTIVITY TIMELINE ═══ */}
+            {activeTab === 'timeline' && (
+              <ActivityTimeline events={timelineEvents || []} />
+            )}
+
+            {/* ═══ SPRINT HISTORY ═══ */}
+            {activeTab === 'sprints' && (
+              <SprintHistoryPanel sprints={sprints || []} onRerun={onRerunSprint} />
+            )}
+
+            {/* ═══ WORKSPACE FILES ═══ */}
+            {activeTab === 'files' && (
+              <WorkspaceFileBrowser projectId={project?.project_id} />
             )}
 
             {/* ═══ TERMINAL & TESTS ═══ */}
