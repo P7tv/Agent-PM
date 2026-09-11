@@ -2,7 +2,7 @@ import sqlite3
 import json
 import time
 from typing import List, Optional, Dict, Any
-from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest
+from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest, SprintRecord
 
 from contextlib import contextmanager
 
@@ -90,6 +90,20 @@ class StateStore:
                     summary TEXT,
                     status TEXT,
                     created_at REAL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sprints (
+                    sprint_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    directive TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    total_tokens INTEGER DEFAULT 0,
+                    backend_used TEXT DEFAULT 'mock',
+                    started_at REAL NOT NULL,
+                    completed_at REAL,
+                    tasks_count INTEGER DEFAULT 0,
+                    release_summary TEXT
                 )
             """)
             conn.commit()
@@ -281,4 +295,88 @@ class StateStore:
             conn.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_states WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM approvals WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM sprints WHERE project_id = ?", (project_id,))
             conn.commit()
+
+    def record_sprint(self, sprint: SprintRecord) -> SprintRecord:
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO sprints
+                (sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sprint.sprint_id, sprint.project_id, sprint.directive, sprint.status,
+                    sprint.total_tokens, sprint.backend_used, sprint.started_at,
+                    sprint.completed_at, sprint.tasks_count, sprint.release_summary
+                )
+            )
+            conn.commit()
+        return sprint
+
+    def update_sprint(
+        self,
+        sprint_id: str,
+        status: Optional[str] = None,
+        completed_at: Optional[float] = None,
+        total_tokens: Optional[int] = None,
+        backend_used: Optional[str] = None,
+        release_summary: Optional[str] = None,
+        tasks_count: Optional[int] = None
+    ):
+        updates = []
+        params = []
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if completed_at is not None:
+            updates.append("completed_at = ?")
+            params.append(completed_at)
+        if total_tokens is not None:
+            updates.append("total_tokens = ?")
+            params.append(total_tokens)
+        if backend_used is not None:
+            updates.append("backend_used = ?")
+            params.append(backend_used)
+        if release_summary is not None:
+            updates.append("release_summary = ?")
+            params.append(release_summary)
+        if tasks_count is not None:
+            updates.append("tasks_count = ?")
+            params.append(tasks_count)
+
+        if not updates:
+            return
+
+        params.append(sprint_id)
+        query = f"UPDATE sprints SET {', '.join(updates)} WHERE sprint_id = ?"
+        with self._get_conn() as conn:
+            conn.execute(query, tuple(params))
+            conn.commit()
+
+    def get_sprints(self, project_id: str) -> List[SprintRecord]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """
+                SELECT sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary
+                FROM sprints WHERE project_id = ? ORDER BY started_at DESC
+                """,
+                (project_id,)
+            )
+            return [
+                SprintRecord(
+                    sprint_id=r[0],
+                    project_id=r[1],
+                    directive=r[2],
+                    status=r[3],
+                    total_tokens=r[4] or 0,
+                    backend_used=r[5] or "mock",
+                    started_at=r[6],
+                    completed_at=r[7],
+                    tasks_count=r[8] or 0,
+                    release_summary=r[9]
+                )
+                for r in cur.fetchall()
+            ]
+

@@ -88,6 +88,19 @@ class ApprovalRequest(BaseModel):
     status: str = "PENDING"  # PENDING, APPROVED, REJECTED
     created_at: float = Field(default_factory=time.time)
 
+class SprintRecord(BaseModel):
+    sprint_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    project_id: str
+    directive: str
+    status: str = "RUNNING"  # RUNNING | COMPLETED | REJECTED | FAILED
+    total_tokens: int = 0
+    backend_used: str = "mock"
+    started_at: float = Field(default_factory=time.time)
+    completed_at: Optional[float] = None
+    tasks_count: int = 0
+    release_summary: Optional[str] = None
+
+
 class DownloadSkillRequest(BaseModel):
     url: str
     skill_name: Optional[str] = None

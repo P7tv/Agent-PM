@@ -15,7 +15,7 @@ from app.services.git_service import GitService
 from app.services.skill_manager import SkillManager
 from app.services.console_service import ConsoleService, parse_target_role
 from app.api.websocket_hub import hub
-from app.models.schemas import DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest, SetSkillModeRequest
+from app.models.schemas import DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest, SetSkillModeRequest, SprintRecord
 
 router = APIRouter(prefix="/api")
 
@@ -113,6 +113,13 @@ def get_project_tasks(project_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     return store.get_tasks(project_id)
+
+@router.get("/projects/{project_id}/sprints", response_model=List[SprintRecord])
+def get_project_sprints(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.get_sprints(project_id)
 
 @router.get("/projects/{project_id}/approvals")
 def get_project_approvals(project_id: str):

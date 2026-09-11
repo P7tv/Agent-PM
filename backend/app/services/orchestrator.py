@@ -1,9 +1,11 @@
 import asyncio
+import uuid
+import time
 from typing import Dict, Any, Optional
 from app.services.state_store import StateStore
 from app.services.project_manager import ProjectManager
 from app.services.agent_runner import AgentRunner
-from app.models.schemas import TaskStatus, AgentStatus
+from app.models.schemas import TaskStatus, AgentStatus, SprintRecord
 
 class Orchestrator:
     def __init__(self, store: StateStore, project_manager: ProjectManager, agent_runner: AgentRunner):
@@ -53,9 +55,44 @@ class Orchestrator:
                     "last_tool_call": tool
                 })
 
+        # Initialize Sprint tracking
+        sprint_id = f"sprint-{uuid.uuid4().hex[:8]}"
+        total_tokens = 0
+        used_backends = set()
+
+        def record_res(r):
+            nonlocal total_tokens
+            if r and isinstance(r, dict):
+                total_tokens += r.get("tokens_used", 0)
+                b = r.get("backend_used")
+                if b:
+                    used_backends.add(b)
+
+        def get_backend():
+            return "sdk" if "sdk" in used_backends else ("cli" if "cli" in used_backends else "mock")
+
+        sprint_record = SprintRecord(
+            sprint_id=sprint_id,
+            project_id=project_id,
+            directive=directive,
+            status="RUNNING",
+            total_tokens=0,
+            backend_used="mock",
+            started_at=time.time(),
+            tasks_count=0
+        )
+        self.store.record_sprint(sprint_record)
+
+        if event_callback:
+            await event_callback("SPRINT_STARTED", {
+                "project_id": project_id,
+                "sprint_id": sprint_id,
+                "directive": directive
+            })
+
         # 0. Tech Lead triages directive
         await update_agent("TechLead", "THINKING", f"Triaging PM directive: {directive}")
-        await self.runner.dispatch_agent_task(
+        tl_res = await self.runner.dispatch_agent_task(
             project_id=project_id,
             role="TechLead",
             prompt=f"Triage PM directive, assess project impact, and coordinate tasks with Architect: {directive}",
@@ -63,6 +100,7 @@ class Orchestrator:
             project_context=meta,
             event_callback=event_callback
         )
+        record_res(tl_res)
         await update_agent("TechLead", "DONE", "Triaged and delegated to Architect")
 
         # 1. Architect decomposes tasks
@@ -75,6 +113,7 @@ class Orchestrator:
             project_context=meta,
             event_callback=event_callback
         )
+        record_res(arch_res)
         await update_agent("Architect", "DONE", "Task breakdown complete")
         
         # Create initial tasks in state store
@@ -83,6 +122,9 @@ class Orchestrator:
         t_be = self.store.create_task(project_id, "Backend & API Logic", "BackendDev", f"Implement server logic for: {directive}")
         t_qa = self.store.create_task(project_id, "Automated Verification", "QATester", "Run tests and verify quality")
         
+        tasks_count = 4
+        self.store.update_sprint(sprint_id, tasks_count=tasks_count, total_tokens=total_tokens, backend_used=get_backend())
+
         if event_callback:
             await event_callback("TASKS_UPDATED", {"project_id": project_id})
 
@@ -105,13 +147,29 @@ class Orchestrator:
             decision = await self._wait_for_approval(approval.request_id)
 
             if decision == "REJECTED":
+                self.store.update_sprint(
+                    sprint_id,
+                    status="REJECTED",
+                    completed_at=time.time(),
+                    total_tokens=total_tokens,
+                    backend_used=get_backend(),
+                    tasks_count=tasks_count,
+                    release_summary="PM rejected the plan. Pipeline halted."
+                )
                 if event_callback:
                     await event_callback("PIPELINE_REJECTED", {
                         "project_id": project_id,
                         "directive": directive,
                         "summary": "PM rejected the plan. Pipeline halted."
                     })
-                return {"status": "REJECTED", "project_id": project_id, "directive": directive}
+                return {
+                    "status": "REJECTED",
+                    "project_id": project_id,
+                    "directive": directive,
+                    "sprint_id": sprint_id,
+                    "total_tokens": total_tokens,
+                    "backend_used": get_backend()
+                }
 
         # 3. Designer and Backend Dev execute in parallel; FrontendDev runs after Designer
         async def run_designer():
@@ -125,6 +183,7 @@ class Orchestrator:
                 project_context=meta,
                 event_callback=event_callback
             )
+            record_res(res)
             self.store.update_task_status(t_ui.task_id, "DONE")
             await update_agent("Designer", "DONE", "Design specifications ready")
             return res
@@ -140,6 +199,7 @@ class Orchestrator:
                 project_context=meta,
                 event_callback=event_callback
             )
+            record_res(res)
             self.store.update_task_status(t_be.task_id, "DONE")
             await update_agent("BackendDev", "DONE", "Backend endpoints complete")
             return res
@@ -155,6 +215,7 @@ class Orchestrator:
                 project_context=meta,
                 event_callback=event_callback
             )
+            record_res(res)
             self.store.update_task_status(t_fe.task_id, "DONE")
             await update_agent("FrontendDev", "DONE", "Frontend code committed")
             return res
@@ -177,12 +238,13 @@ class Orchestrator:
                 project_context=meta,
                 event_callback=event_callback
             )
+            record_res(qa_res)
             
             # Simulated failure handling or real error recovery
             if "FAIL" in qa_res.get("response", "") and attempt < max_retries:
                 await update_agent("QATester", "BLOCKED", f"Test failures caught on attempt {attempt}. Dispatching fix.")
                 await update_agent("BackendDev", "WORKING", "Self-healing: fixing code based on QA failure report")
-                await self.runner.dispatch_agent_task(
+                fix_res = await self.runner.dispatch_agent_task(
                     project_id=project_id,
                     role="BackendDev",
                     prompt="Fix all errors reported in QA test execution.",
@@ -190,6 +252,7 @@ class Orchestrator:
                     project_context=meta,
                     event_callback=event_callback
                 )
+                record_res(fix_res)
             elif "FAIL" in qa_res.get("response", ""):
                 # Final attempt also failed — escalate to PM
                 tests_passed = False
@@ -226,13 +289,29 @@ class Orchestrator:
             decision = await self._wait_for_approval(qa_approval.request_id)
             if decision == "REJECTED":
                 await update_agent("TechLead", "BLOCKED", f"Pipeline halted by PM due to QA failures: {directive}")
+                self.store.update_sprint(
+                    sprint_id,
+                    status="FAILED",
+                    completed_at=time.time(),
+                    total_tokens=total_tokens,
+                    backend_used=get_backend(),
+                    tasks_count=tasks_count,
+                    release_summary="PM halted pipeline due to QA failures."
+                )
                 if event_callback:
                     await event_callback("PIPELINE_HALTED", {
                         "project_id": project_id,
                         "directive": directive,
                         "summary": "PM halted pipeline due to QA failures."
                     })
-                return {"status": "HALTED_QA_FAILURE", "project_id": project_id, "directive": directive}
+                return {
+                    "status": "HALTED_QA_FAILURE",
+                    "project_id": project_id,
+                    "directive": directive,
+                    "sprint_id": sprint_id,
+                    "total_tokens": total_tokens,
+                    "backend_used": get_backend()
+                }
         else:
             self.store.update_task_status(t_qa.task_id, "DONE")
             await update_agent("QATester", "DONE", "All automated verification checks passed ✅")
@@ -247,11 +326,12 @@ class Orchestrator:
             project_context=meta,
             event_callback=event_callback
         )
+        record_res(rev_res)
         await update_agent("Reviewer", "DONE", "Release approved and documented")
 
         # DocWriter
         await update_agent("DocWriter", "WORKING", "Updating project documentation and README")
-        await self.runner.dispatch_agent_task(
+        doc_res = await self.runner.dispatch_agent_task(
             project_id=project_id,
             role="DocWriter",
             prompt="Update documentation and user guides for completed feature.",
@@ -259,16 +339,38 @@ class Orchestrator:
             project_context=meta,
             event_callback=event_callback
         )
+        record_res(doc_res)
         await update_agent("DocWriter", "DONE", "Docs up to date")
 
         # Tech Lead wraps up sprint
         await update_agent("TechLead", "DONE", f"Sprint completed successfully: {directive}")
 
+        release_summary = rev_res.get("response", "Sprint successfully completed by AI team!")
+        self.store.update_sprint(
+            sprint_id,
+            status="COMPLETED",
+            completed_at=time.time(),
+            total_tokens=total_tokens,
+            backend_used=get_backend(),
+            tasks_count=tasks_count,
+            release_summary=release_summary
+        )
+
         if event_callback:
             await event_callback("PIPELINE_COMPLETED", {
                 "project_id": project_id,
                 "directive": directive,
-                "summary": "Sprint successfully completed by AI team!"
+                "summary": "Sprint successfully completed by AI team!",
+                "sprint_id": sprint_id,
+                "total_tokens": total_tokens,
+                "backend_used": get_backend()
             })
 
-        return {"status": "COMPLETED", "project_id": project_id, "directive": directive}
+        return {
+            "status": "COMPLETED",
+            "project_id": project_id,
+            "directive": directive,
+            "sprint_id": sprint_id,
+            "total_tokens": total_tokens,
+            "backend_used": get_backend()
+        }
