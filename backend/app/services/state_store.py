@@ -419,6 +419,31 @@ class StateStore:
                 for r in cur.fetchall()
             ]
 
+    def get_sprint(self, sprint_id: str) -> Optional[SprintRecord]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """
+                SELECT sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary
+                FROM sprints WHERE sprint_id = ?
+                """,
+                (sprint_id,)
+            )
+            r = cur.fetchone()
+            if r:
+                return SprintRecord(
+                    sprint_id=r[0],
+                    project_id=r[1],
+                    directive=r[2],
+                    status=r[3],
+                    total_tokens=r[4] or 0,
+                    backend_used=r[5] or "mock",
+                    started_at=r[6],
+                    completed_at=r[7],
+                    tasks_count=r[8] or 0,
+                    release_summary=r[9]
+                )
+        return None
+
     def enqueue_directive(self, project_id: str, directive: str) -> QueueItem:
         with self._get_conn() as conn:
             cur = conn.execute("SELECT MAX(position) FROM directive_queue WHERE project_id = ?", (project_id,))
@@ -453,5 +478,15 @@ class StateStore:
             cur = conn.execute("UPDATE directive_queue SET status = 'CANCELLED' WHERE queue_id = ? AND status = 'QUEUED'", (queue_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def get_all_queue_items(self) -> List[QueueItem]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "SELECT queue_id, project_id, directive, status, position, created_at FROM directive_queue WHERE status IN ('QUEUED', 'RUNNING') ORDER BY created_at ASC"
+            )
+            return [
+                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5])
+                for r in cur.fetchall()
+            ]
 
 
