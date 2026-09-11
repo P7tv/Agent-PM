@@ -100,6 +100,15 @@ class SprintRecord(BaseModel):
     tasks_count: int = 0
     release_summary: Optional[str] = None
 
+class QueueItem(BaseModel):
+    queue_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    project_id: str
+    directive: str
+    status: str = "QUEUED"  # QUEUED | RUNNING | COMPLETED | CANCELLED
+    position: int = 0
+    created_at: float = Field(default_factory=time.time)
+
+
 
 class DownloadSkillRequest(BaseModel):
     url: str

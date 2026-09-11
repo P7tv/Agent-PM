@@ -2,7 +2,7 @@ import sqlite3
 import json
 import time
 from typing import List, Optional, Dict, Any
-from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest, SprintRecord
+from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest, SprintRecord, QueueItem
 
 from contextlib import contextmanager
 
@@ -104,6 +104,16 @@ class StateStore:
                     completed_at REAL,
                     tasks_count INTEGER DEFAULT 0,
                     release_summary TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS directive_queue (
+                    queue_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    directive TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    position INTEGER DEFAULT 0,
+                    created_at REAL NOT NULL
                 )
             """)
             conn.commit()
@@ -296,6 +306,7 @@ class StateStore:
             conn.execute("DELETE FROM agent_states WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM approvals WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM sprints WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM directive_queue WHERE project_id = ?", (project_id,))
             conn.commit()
 
     def record_sprint(self, sprint: SprintRecord) -> SprintRecord:
@@ -379,4 +390,40 @@ class StateStore:
                 )
                 for r in cur.fetchall()
             ]
+
+    def enqueue_directive(self, project_id: str, directive: str) -> QueueItem:
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT MAX(position) FROM directive_queue WHERE project_id = ?", (project_id,))
+            row = cur.fetchone()
+            max_pos = row[0] if row and row[0] is not None else -1
+            item = QueueItem(project_id=project_id, directive=directive, position=max_pos + 1)
+            conn.execute(
+                "INSERT INTO directive_queue (queue_id, project_id, directive, status, position, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (item.queue_id, item.project_id, item.directive, item.status, item.position, item.created_at)
+            )
+            conn.commit()
+            return item
+
+    def get_queue(self, project_id: str) -> List[QueueItem]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "SELECT queue_id, project_id, directive, status, position, created_at FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' ORDER BY position ASC",
+                (project_id,)
+            )
+            return [
+                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5])
+                for r in cur.fetchall()
+            ]
+
+    def update_queue_item(self, queue_id: str, status: str):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE directive_queue SET status = ? WHERE queue_id = ?", (status, queue_id))
+            conn.commit()
+
+    def cancel_queue_item(self, queue_id: str) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE directive_queue SET status = 'CANCELLED' WHERE queue_id = ? AND status = 'QUEUED'", (queue_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
 

@@ -14,8 +14,9 @@ from app.services.tech_lead_service import TechLeadService
 from app.services.git_service import GitService
 from app.services.skill_manager import SkillManager
 from app.services.console_service import ConsoleService, parse_target_role
+from app.services.sprint_queue import SprintQueue
 from app.api.websocket_hub import hub
-from app.models.schemas import DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest, SetSkillModeRequest, SprintRecord
+from app.models.schemas import DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest, SetSkillModeRequest, SprintRecord, QueueItem
 
 router = APIRouter(prefix="/api")
 
@@ -25,6 +26,7 @@ store = StateStore(db_path=db_path)
 pm = ProjectManager(store=store)
 runner = AgentRunner(use_mock=False, store=store)
 orchestrator = Orchestrator(store=store, project_manager=pm, agent_runner=runner)
+sprint_queue = SprintQueue(store=store, orchestrator=orchestrator, broadcast_fn=hub.broadcast)
 tech_lead_svc = TechLeadService(store=store, pm=pm)
 git_svc = GitService()
 skill_manager = SkillManager()
@@ -120,6 +122,33 @@ def get_project_sprints(project_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     return store.get_sprints(project_id)
+
+@router.get("/projects/{project_id}/queue", response_model=List[QueueItem])
+def get_project_queue(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return sprint_queue.list_queue(project_id)
+
+@router.post("/projects/{project_id}/queue", response_model=QueueItem)
+async def enqueue_project_directive(project_id: str, req: DirectiveRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    item = sprint_queue.enqueue(project_id, req.directive)
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
+    return item
+
+@router.delete("/projects/{project_id}/queue/{queue_id}")
+async def cancel_queue_directive(project_id: str, queue_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    cancelled = sprint_queue.cancel_item(queue_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Queue item not found or already running")
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "cancelled_id": queue_id})
+    return {"status": "CANCELLED", "queue_id": queue_id}
 
 @router.get("/projects/{project_id}/approvals")
 def get_project_approvals(project_id: str):
