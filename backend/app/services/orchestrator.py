@@ -113,48 +113,54 @@ class Orchestrator:
                     })
                 return {"status": "REJECTED", "project_id": project_id, "directive": directive}
 
-        # 3. Designer and Dev Agents execute
-        # Designer
-        self.store.update_task_status(t_ui.task_id, "IN_PROGRESS")
-        await update_agent("Designer", "WORKING", "Creating styling tokens and responsive layout")
-        await self.runner.dispatch_agent_task(
-            project_id=project_id,
-            role="Designer",
-            prompt=f"Create styling tokens and layout for: {directive}",
-            workspace_path=workspace,
-            project_context=meta,
-            event_callback=event_callback
-        )
-        self.store.update_task_status(t_ui.task_id, "DONE")
-        await update_agent("Designer", "DONE", "Design specifications ready")
+        # 3. Designer and Backend Dev execute in parallel; FrontendDev runs after Designer
+        async def run_designer():
+            self.store.update_task_status(t_ui.task_id, "IN_PROGRESS")
+            await update_agent("Designer", "WORKING", "Creating styling tokens and responsive layout")
+            res = await self.runner.dispatch_agent_task(
+                project_id=project_id,
+                role="Designer",
+                prompt=f"Create styling tokens and layout for: {directive}",
+                workspace_path=workspace,
+                project_context=meta,
+                event_callback=event_callback
+            )
+            self.store.update_task_status(t_ui.task_id, "DONE")
+            await update_agent("Designer", "DONE", "Design specifications ready")
+            return res
 
-        # Frontend Dev
-        self.store.update_task_status(t_fe.task_id, "IN_PROGRESS")
-        await update_agent("FrontendDev", "WORKING", "Building components and pages")
-        await self.runner.dispatch_agent_task(
-            project_id=project_id,
-            role="FrontendDev",
-            prompt=f"Implement frontend components for: {directive}",
-            workspace_path=workspace,
-            project_context=meta,
-            event_callback=event_callback
-        )
-        self.store.update_task_status(t_fe.task_id, "DONE")
-        await update_agent("FrontendDev", "DONE", "Frontend code committed")
+        async def run_backend():
+            self.store.update_task_status(t_be.task_id, "IN_PROGRESS")
+            await update_agent("BackendDev", "WORKING", "Implementing endpoints and data layer")
+            res = await self.runner.dispatch_agent_task(
+                project_id=project_id,
+                role="BackendDev",
+                prompt=f"Implement backend endpoints for: {directive}",
+                workspace_path=workspace,
+                project_context=meta,
+                event_callback=event_callback
+            )
+            self.store.update_task_status(t_be.task_id, "DONE")
+            await update_agent("BackendDev", "DONE", "Backend endpoints complete")
+            return res
 
-        # Backend Dev
-        self.store.update_task_status(t_be.task_id, "IN_PROGRESS")
-        await update_agent("BackendDev", "WORKING", "Implementing endpoints and data layer")
-        await self.runner.dispatch_agent_task(
-            project_id=project_id,
-            role="BackendDev",
-            prompt=f"Implement backend endpoints for: {directive}",
-            workspace_path=workspace,
-            project_context=meta,
-            event_callback=event_callback
-        )
-        self.store.update_task_status(t_be.task_id, "DONE")
-        await update_agent("BackendDev", "DONE", "Backend endpoints complete")
+        async def run_frontend():
+            self.store.update_task_status(t_fe.task_id, "IN_PROGRESS")
+            await update_agent("FrontendDev", "WORKING", "Building components and pages")
+            res = await self.runner.dispatch_agent_task(
+                project_id=project_id,
+                role="FrontendDev",
+                prompt=f"Implement frontend components for: {directive}",
+                workspace_path=workspace,
+                project_context=meta,
+                event_callback=event_callback
+            )
+            self.store.update_task_status(t_fe.task_id, "DONE")
+            await update_agent("FrontendDev", "DONE", "Frontend code committed")
+            return res
+
+        designer_res, backend_res = await asyncio.gather(run_designer(), run_backend())
+        frontend_res = await run_frontend()
 
         # 4. QA Tester with Self-Healing Loop (Max 3 retries)
         self.store.update_task_status(t_qa.task_id, "TESTING")

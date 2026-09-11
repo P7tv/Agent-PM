@@ -37,3 +37,30 @@ async def test_orchestrator_self_healing_qa_retry():
         result = await orch.execute_pm_directive("proj-2", "Refactor auth", event_callback=on_event)
         assert result["status"] == "COMPLETED"
         assert "AGENT_THOUGHT_DELTA" in events
+
+@pytest.mark.asyncio
+async def test_orchestrator_parallel_execution():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = StateStore(os.path.join(tmpdir, "state.db"))
+        pm = ProjectManager(store=store)
+        pm.register_project("proj-parallel", "Parallel Proj", tmpdir, auto_pilot=True)
+        
+        start_times = {}
+        runner = AgentRunner(use_mock=True)
+        orig_dispatch = runner.dispatch_agent_task
+        
+        async def tracking_dispatch(*args, **kwargs):
+            role = kwargs.get("role") or (args[1] if len(args) > 1 else None)
+            import time
+            start_times[role] = time.time()
+            return await orig_dispatch(*args, **kwargs)
+            
+        runner.dispatch_agent_task = tracking_dispatch
+        orch = Orchestrator(store=store, project_manager=pm, agent_runner=runner)
+        result = await orch.execute_pm_directive("proj-parallel", "Build fullstack feature")
+        
+        assert result["status"] == "COMPLETED"
+        assert "Designer" in start_times and "BackendDev" in start_times
+        # Designer and BackendDev should start within 40ms of each other (parallel)
+        assert abs(start_times["Designer"] - start_times["BackendDev"]) < 0.04
+
