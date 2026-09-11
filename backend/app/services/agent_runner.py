@@ -71,6 +71,40 @@ class AgentRunner:
 
         await emit("AGENT_STATUS_CHANGE", {"status": "THINKING"})
 
+        active_skills = []
+        base_role_skill = self.skill_manager.get_base_role_skill(role)
+        if self.store:
+            agent_state = self.store.get_agent_status(project_id, role)
+            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
+                for s_name in agent_state.equipped_skills:
+                    try:
+                        active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
+                    except: pass
+            else:
+                active_skills = self.skill_manager.match_skills_for_task(
+                    role=role,
+                    task_prompt=prompt,
+                    project_path=workspace_path,
+                    max_skills=2
+                )
+        else:
+            active_skills = self.skill_manager.match_skills_for_task(
+                role=role,
+                task_prompt=prompt,
+                project_path=workspace_path,
+                max_skills=2
+            )
+
+        if active_skills:
+            skill_titles = ", ".join(s.title for s in active_skills)
+            await emit("AGENT_THOUGHT_DELTA", {"thought": f"🎯 Activated Skill Playbook: {skill_titles}"})
+
+        agent_persona = None
+        if self.store:
+            ag_state = self.store.get_agent_status(project_id, role)
+            if ag_state:
+                agent_persona = ag_state.thought or ag_state.skill_title
+
         async def run_contextual_simulation():
             stack = project_context.get("stack_type", "Project") if project_context else "Project"
             dirs = [d.rstrip('/') for d in (project_context.get("directory_structure", []) if project_context else []) if not d.startswith('.')][:3]
@@ -78,9 +112,15 @@ class AgentRunner:
             
             thoughts = [
                 f"Analyzing PM requirements for {role} ({stack})...",
+            ]
+            if agent_persona and role not in ROLE_PROMPTS:
+                thoughts.append(f"Applying specialist persona: {agent_persona}...")
+            thoughts.extend([
                 f"Examining workspace files{dir_str} at {workspace_path}...",
                 f"Aligning with role playbooks and active tasks..."
-            ]
+            ])
+            if active_skills:
+                thoughts.append(f"Operating under methodology: {', '.join(s.title for s in active_skills)}")
             for t in thoughts:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": t})
                 await asyncio.sleep(0.04)
@@ -95,25 +135,13 @@ class AgentRunner:
                 "role": role,
                 "response": f"Completed tasks for: {prompt}",
                 "tokens_used": 0,
-                "backend_used": "mock"
+                "backend_used": "mock",
+                "active_skills": [s.name for s in active_skills]
             }
 
         # If explicit test mock requested, run simulation
         if self.use_mock:
             return await run_contextual_simulation()
-
-        active_skills = []
-        base_role_skill = self.skill_manager.get_base_role_skill(role)
-        if self.store:
-            agent_state = self.store.get_agent_status(project_id, role)
-            if agent_state:
-                if getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
-                    for s_name in agent_state.equipped_skills:
-                        try:
-                            active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
-                        except: pass
-                else:
-                    active_skills = self.skill_manager.get_domain_skills_for_role(role)
 
         system_instruction = self.skill_manager.synthesize_agent_prompt(
             role=role,
@@ -122,6 +150,8 @@ class AgentRunner:
             base_skill=base_role_skill,
             active_skills=active_skills
         )
+        if agent_persona and role not in ROLE_PROMPTS:
+            system_instruction = f"Specialist Persona: {agent_persona}\n\n" + system_instruction
 
         # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present)
         if self.has_api_key and HAS_ANTIGRAVITY:
@@ -155,7 +185,8 @@ class AgentRunner:
                         "role": role,
                         "response": resp_str,
                         "tokens_used": tokens_used,
-                        "backend_used": "sdk"
+                        "backend_used": "sdk",
+                        "active_skills": [s.name for s in active_skills]
                     }
             except Exception as e:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": f"SDK Notice: {str(e)[:60]}... falling back to agy CLI."})
@@ -210,7 +241,8 @@ class AgentRunner:
                             "role": role,
                             "response": text,
                             "tokens_used": estimated_tokens,
-                            "backend_used": "cli"
+                            "backend_used": "cli",
+                            "active_skills": [s.name for s in active_skills]
                         }
             except Exception as e:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": f"CLI note: {str(e)[:50]}... using local runner."})
@@ -238,14 +270,25 @@ class AgentRunner:
         base_role_skill = self.skill_manager.get_base_role_skill(role)
         if self.store:
             agent_state = self.store.get_agent_status(project_id, role)
-            if agent_state:
-                if getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
-                    for s_name in agent_state.equipped_skills:
-                        try:
-                            active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
-                        except: pass
-                else:
-                    active_skills = self.skill_manager.get_domain_skills_for_role(role)
+            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
+                for s_name in agent_state.equipped_skills:
+                    try:
+                        active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
+                    except: pass
+            else:
+                active_skills = self.skill_manager.match_skills_for_task(
+                    role=role,
+                    task_prompt=message,
+                    project_path=workspace_path,
+                    max_skills=2
+                )
+        else:
+            active_skills = self.skill_manager.match_skills_for_task(
+                role=role,
+                task_prompt=message,
+                project_path=workspace_path,
+                max_skills=2
+            )
 
         system_instruction = self.skill_manager.synthesize_agent_prompt(
             role=role,
@@ -317,7 +360,8 @@ class AgentRunner:
             "response": response_text,
             "code_proposals": code_proposals,
             "tokens_used": tokens_used,
-            "backend_used": backend_used
+            "backend_used": backend_used,
+            "active_skills": [s.name for s in active_skills]
         }
 
 

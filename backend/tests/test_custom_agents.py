@@ -69,3 +69,35 @@ def test_auto_generate_roster_heuristics(tmp_path):
     assert "Designer" not in roles
     # Verify specialized roles generated
     assert any("Physics" in (a.get("skill_title") or a.get("role") or "") or "Three" in (a.get("skill_title") or a.get("role") or "") or "Game" in (a.get("skill_title") or a.get("role") or "") for a in agents)
+
+@pytest.mark.asyncio
+async def test_agent_runner_custom_role_persona(tmp_path):
+    from app.services.agent_runner import AgentRunner
+    
+    db_file = str(tmp_path / "test_state.db")
+    store = StateStore(db_path=db_file)
+    store.create_project("proj-c", "Custom App", "/test/custom")
+    store.add_agent(
+        "proj-c",
+        role="CryptoAuditor",
+        title="Smart Contract Security Auditor",
+        description="Audits EVM bytecode and gas usage."
+    )
+    
+    runner = AgentRunner(use_mock=True, store=store)
+    events = []
+    async def cb(ev, data):
+        events.append((ev, data))
+        
+    res = await runner.dispatch_agent_task(
+        project_id="proj-c",
+        role="CryptoAuditor",
+        prompt="Audit the staking contract for reentrancy bugs.",
+        workspace_path="/test/custom",
+        event_callback=cb
+    )
+    assert res["role"] == "CryptoAuditor"
+    assert res["status"] == "SUCCESS"
+    # Verify persona was reflected in events
+    deltas = [d.get("thought", "") for ev, d in events if ev == "AGENT_THOUGHT_DELTA"]
+    assert any("EVM" in d or "gas usage" in d for d in deltas)
