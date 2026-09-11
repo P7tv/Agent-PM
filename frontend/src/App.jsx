@@ -305,6 +305,12 @@ export default function App() {
 
   const focusedProject = projects.find((p) => p.project_id === focusedProjectId);
 
+  // Compute session token usage and estimated cost for active project
+  const currentSprints = sprintsByProject[activeProjectId] || [];
+  const sessionTokens = currentSprints.reduce((acc, sp) => acc + (sp.total_tokens || 0), 0);
+  const costUSD = (sessionTokens * 0.000001).toFixed(3);
+  const sprintCost = { tokens: sessionTokens, costUSD };
+
   return (
     <div className="app-container">
       {/* Top Header */}
@@ -384,6 +390,7 @@ export default function App() {
         activeProjectId={activeProjectId}
         onSelectProject={setActiveProjectId}
         onDispatchDirective={handleDispatchDirective}
+        sprintCost={sprintCost}
       />
 
       {/* Main Viewport */}
