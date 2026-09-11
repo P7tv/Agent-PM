@@ -6,7 +6,10 @@ import {
   Sun, 
   Moon, 
   Layers,
-  Plus
+  Plus,
+  ListOrdered,
+  X,
+  Loader2
 } from 'lucide-react';
 import PMCommandBar from './components/PMCommandBar';
 import OfficeFloorView from './components/OfficeFloorView';
@@ -16,6 +19,8 @@ import { DecisionGateModal } from './components/DecisionGateModal';
 import AddProjectModal from './components/AddProjectModal';
 import TechLeadStandupModal from './components/TechLeadStandupModal';
 import DeleteProjectModal from './components/DeleteProjectModal';
+import AddAgentModal from './components/AddAgentModal';
+import AutoGenerateTeamModal from './components/AutoGenerateTeamModal';
 
 export default function App() {
   const [theme, setTheme] = useState(() => {
@@ -37,7 +42,11 @@ export default function App() {
   const [standupProject, setStandupProject] = useState(null); // { projectId, projectName }
   const [isAddProjectOpen, setIsAddProjectOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState(null);
+  const [addAgentProject, setAddAgentProject] = useState(null);
+  const [autoGenProject, setAutoGenProject] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
+  const [globalQueue, setGlobalQueue] = useState([]);
+  const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
 
 
   const socketRef = useRef(null);
@@ -69,8 +78,28 @@ export default function App() {
         fetchConsoleHistory(p.project_id);
         fetchSprints(p.project_id);
       }
+      fetchGlobalQueue();
     } catch (err) {
       console.error('Error fetching initial data:', err);
+    }
+  };
+
+  const fetchGlobalQueue = async () => {
+    try {
+      const res = await fetch('/api/queue/all');
+      const items = await res.json();
+      setGlobalQueue(items);
+    } catch (e) {
+      console.error('Error loading global queue:', e);
+    }
+  };
+
+  const handleCancelQueueItem = async (queueId) => {
+    try {
+      await fetch(`/api/queue/${queueId}`, { method: 'DELETE' });
+      fetchGlobalQueue();
+    } catch (e) {
+      console.error('Error cancelling queue item:', e);
     }
   };
 
@@ -157,7 +186,7 @@ export default function App() {
           }
 
           // Handle state updates
-          if (evType === 'AGENT_STATE_UPDATE' || evType === 'AGENT_STATUS_CHANGE') {
+          if (['AGENT_STATE_UPDATE', 'AGENT_STATUS_CHANGE', 'AGENT_ROSTER_UPDATED', 'AGENT_DELETED'].includes(evType)) {
             fetchProjectDetails(projId);
           } else if (evType === 'TASKS_UPDATED') {
             fetch(`/api/projects/${projId}/tasks`)
@@ -173,6 +202,8 @@ export default function App() {
             fetchData();
           } else if (['SPRINT_STARTED', 'PIPELINE_COMPLETED', 'PIPELINE_REJECTED', 'PIPELINE_HALTED'].includes(evType)) {
             if (projId) fetchSprints(projId);
+          } else if (['QUEUE_UPDATED', 'QUEUE_ITEM_STARTED', 'QUEUE_ITEM_FINISHED', 'DIRECTIVE_STARTED'].includes(evType)) {
+            fetchGlobalQueue();
           } else if (evType === 'CONSOLE_MESSAGE') {
             // Append console message to the correct project's history
             if (projId) {
@@ -211,6 +242,7 @@ export default function App() {
       body: JSON.stringify({ directive })
     });
     fetchProjectDetails(projectId);
+    fetchGlobalQueue();
   };
 
   const handleResolveApproval = async (requestId, decision) => {
@@ -291,6 +323,41 @@ export default function App() {
     }
   };
 
+  const handleAddCustomAgent = async (agentData) => {
+    if (!addAgentProject) return;
+    const res = await fetch(`/api/projects/${addAgentProject.project_id}/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(agentData)
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Could not recruit specialist');
+    }
+    await fetchProjectDetails(addAgentProject.project_id);
+  };
+
+  const handleDeleteCustomAgent = async (projectId, role) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/agents/${role}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        await fetchProjectDetails(projectId);
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to remove agent');
+      }
+    } catch (e) {
+      console.error('Failed to delete agent:', e);
+    }
+  };
+
+  const handleApplyGeneratedTeam = async (genResult) => {
+    if (genResult && genResult.project_id) {
+      await fetchProjectDetails(genResult.project_id);
+    }
+  };
 
   const handleFocusProject = (projectId) => {
     setFocusedProjectId(projectId);
@@ -354,17 +421,28 @@ export default function App() {
             )}
           </div>
 
-          {/* Add Project Button (up to 2) */}
-          {projects.length < 2 && (
-            <button
-              className="view-btn"
-              onClick={() => setIsAddProjectOpen(true)}
-              style={{ border: '1px dashed var(--border-medium)', color: 'var(--primary)' }}
-            >
-              <Plus size={14} />
-              <span>Add Project</span>
-            </button>
-          )}
+          {/* Add Project Button */}
+          <button
+            className="view-btn"
+            onClick={() => setIsAddProjectOpen(true)}
+            style={{ border: '1px dashed var(--border-medium)', color: 'var(--primary)' }}
+          >
+            <Plus size={14} />
+            <span>Add Project</span>
+          </button>
+
+          {/* Global Queue Button */}
+          <button
+            className={`view-btn queue-toggle-btn ${isQueueDrawerOpen ? 'active' : ''}`}
+            onClick={() => setIsQueueDrawerOpen(!isQueueDrawerOpen)}
+            title="Open Global Directive Queue"
+          >
+            <ListOrdered size={14} />
+            <span>Queue</span>
+            {globalQueue.length > 0 && (
+              <span className="queue-badge-count">{globalQueue.length}</span>
+            )}
+          </button>
 
           {/* Theme Toggle Button */}
           <button
@@ -383,6 +461,74 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Global Queue Drawer */}
+      {isQueueDrawerOpen && (
+        <div className="queue-drawer-container">
+          <div className="queue-drawer-header">
+            <div className="queue-drawer-title-wrap">
+              <ListOrdered size={16} color="var(--primary)" />
+              <h3 className="queue-drawer-title">Global Directive Queue</h3>
+              <span className="queue-drawer-count-badge">
+                {globalQueue.filter(q => q.status === 'RUNNING').length} running · {globalQueue.filter(q => q.status === 'QUEUED').length} queued
+              </span>
+            </div>
+            <button
+              className="queue-drawer-close-btn"
+              onClick={() => setIsQueueDrawerOpen(false)}
+              title="Close Queue Drawer"
+            >
+              <X size={15} />
+            </button>
+          </div>
+
+          <div className="queue-drawer-content">
+            {globalQueue.length === 0 ? (
+              <div className="queue-drawer-empty">
+                <span className="queue-empty-icon">☕</span>
+                <p className="queue-empty-text">No directives currently in queue.</p>
+                <p className="queue-empty-sub">Directives dispatched to any project will queue and process sequentially here.</p>
+              </div>
+            ) : (
+              <div className="queue-drawer-list">
+                {globalQueue.map((item) => {
+                  const isRunning = item.status === 'RUNNING';
+                  return (
+                    <div key={item.queue_id} className={`queue-drawer-card ${isRunning ? 'is-running' : ''}`}>
+                      <div className="queue-card-header">
+                        <span className="queue-card-project-tag">{item.project_name || item.project_id}</span>
+                        <span className={`queue-card-status ${isRunning ? 'status-running' : 'status-queued'}`}>
+                          {isRunning ? (
+                            <>
+                              <Loader2 size={11} className="spin" />
+                              <span>Running</span>
+                            </>
+                          ) : (
+                            <span>Queued #{item.position + 1}</span>
+                          )}
+                        </span>
+                        <span className="queue-card-time">
+                          {new Date(item.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                        {!isRunning && (
+                          <button
+                            className="queue-card-cancel-btn"
+                            onClick={() => handleCancelQueueItem(item.queue_id)}
+                            title="Cancel this queued directive"
+                          >
+                            ✕ Cancel
+                          </button>
+                        )}
+                      </div>
+                      <div className="queue-card-directive">{item.directive}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Persistent PM Directive Box */}
       <PMCommandBar
@@ -406,6 +552,9 @@ export default function App() {
             onRequestDelete={setProjectToDelete}
             onOpenAddProject={() => setIsAddProjectOpen(true)}
             onOpenStandup={(pid, pname) => setStandupProject({ projectId: pid, projectName: pname })}
+            onOpenAddAgent={(proj) => setAddAgentProject(proj)}
+            onOpenAutoGenTeam={(proj) => setAutoGenProject(proj)}
+            onDeleteAgent={handleDeleteCustomAgent}
           />
         )}
 
@@ -466,6 +615,20 @@ export default function App() {
         projectId={standupProject?.projectId}
         projectName={standupProject?.projectName}
         theme={theme}
+      />
+
+      <AddAgentModal
+        isOpen={Boolean(addAgentProject)}
+        project={addAgentProject}
+        onClose={() => setAddAgentProject(null)}
+        onAddAgent={handleAddCustomAgent}
+      />
+
+      <AutoGenerateTeamModal
+        isOpen={Boolean(autoGenProject)}
+        project={autoGenProject}
+        onClose={() => setAutoGenProject(null)}
+        onConfirmTeam={handleApplyGeneratedTeam}
       />
     </div>
   );

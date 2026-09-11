@@ -15,7 +15,14 @@ import {
   Cpu,
   BrainCircuit,
   Database,
-  Bug
+  Bug,
+  Sparkles,
+  UserPlus,
+  X,
+  Zap,
+  Box,
+  Activity,
+  Volume2
 } from 'lucide-react';
 import TechLeadCard from './TechLeadCard';
 
@@ -35,6 +42,19 @@ const ROLE_ICONS = {
   SystematicDebugger: <Bug size={20} />
 };
 
+function getRoleIcon(role) {
+  if (ROLE_ICONS[role]) return ROLE_ICONS[role];
+  const r = (role || '').toLowerCase();
+  if (r.includes('crypto') || r.includes('security') || r.includes('audit')) return <ShieldCheck size={20} />;
+  if (r.includes('physics') || r.includes('simul') || r.includes('race')) return <Activity size={20} />;
+  if (r.includes('perf') || r.includes('fast') || r.includes('speed')) return <Zap size={20} />;
+  if (r.includes('3d') || r.includes('three') || r.includes('scene')) return <Box size={20} />;
+  if (r.includes('audio') || r.includes('sound')) return <Volume2 size={20} />;
+  if (r.includes('data') || r.includes('pipeline') || r.includes('etl')) return <Database size={20} />;
+  if (r.includes('ml') || r.includes('ai') || r.includes('model')) return <BrainCircuit size={20} />;
+  return <Bot size={20} />;
+}
+
 export default function OfficeFloorView({ 
   projects = [], 
   agentStates = {}, 
@@ -43,7 +63,10 @@ export default function OfficeFloorView({
   onDeleteProject,
   onRequestDelete,
   onOpenAddProject,
-  onOpenStandup
+  onOpenStandup,
+  onOpenAddAgent,
+  onOpenAutoGenTeam,
+  onDeleteAgent
 }) {
   const activeCount = projects.length;
 
@@ -53,7 +76,7 @@ export default function OfficeFloorView({
         const agents = agentStates[project.project_id] || [];
         const techLead = agents.find((a) => a.role === 'TechLead');
         const teamAgents = agents.filter((a) => a.role !== 'TechLead');
-        const roomTag = idx === 0 ? 'PROJECT 01' : 'PROJECT 02';
+        const roomTag = `PROJECT ${String(idx + 1).padStart(2, '0')}`;
 
         return (
           <div key={project.project_id} className="office-room">
@@ -66,6 +89,15 @@ export default function OfficeFloorView({
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  className="view-btn"
+                  onClick={() => onOpenAutoGenTeam ? onOpenAutoGenTeam(project) : null}
+                  style={{ color: 'var(--primary)', borderColor: 'rgba(59, 130, 246, 0.4)' }}
+                  title="AI-Aligned Team Generator"
+                >
+                  <Sparkles size={14} />
+                  <span>⚡ AI Team</span>
+                </button>
                 <button
                   className="view-btn"
                   onClick={() => onOpenStandup(project.project_id, project.name)}
@@ -112,7 +144,7 @@ export default function OfficeFloorView({
             {/* Sub-Agents Grid */}
             <div className="agent-desks-grid">
               {teamAgents.map((agent) => {
-                const icon = ROLE_ICONS[agent.role] || <Bot size={20} />;
+                const icon = getRoleIcon(agent.role);
                 const statusClass = `status-${agent.status}`;
 
                 return (
@@ -121,7 +153,22 @@ export default function OfficeFloorView({
                     className={`agent-desk-card ${agent.status}`}
                     onClick={() => onAgentClick(project.project_id, agent.role)}
                     title={`Click to whisper instructions to ${agent.role}`}
+                    style={{ position: 'relative' }}
                   >
+                    {onDeleteAgent && (
+                      <button
+                        className="agent-delete-card-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Remove ${agent.skill_title || agent.role} from the project team?`)) {
+                            onDeleteAgent(project.project_id, agent.role);
+                          }
+                        }}
+                        title={`Remove ${agent.skill_title || agent.role}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
                     <div className="agent-avatar-box">
                       {icon}
                     </div>
@@ -156,13 +203,28 @@ export default function OfficeFloorView({
                   </div>
                 );
               })}
+
+              {/* Add Specialist Card */}
+              <div
+                className="agent-desk-card add-specialist-desk-card"
+                onClick={() => onOpenAddAgent ? onOpenAddAgent(project) : null}
+                title="Recruit a new specialist agent for this project"
+              >
+                <div className="agent-avatar-box add-avatar-box">
+                  <UserPlus size={20} />
+                </div>
+                <span className="agent-role" style={{ color: 'var(--primary)' }}>+ Add Specialist</span>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Custom Role
+                </div>
+              </div>
             </div>
           </div>
         );
       })}
 
-      {/* Empty slot for Project 01 when 0 projects */}
-      {projects.length === 0 && (
+      {/* Empty slot for Project 01 when 0 projects, or Add Project card for next project */}
+      {projects.length === 0 ? (
         <div 
           className="office-room" 
           style={{ 
@@ -191,10 +253,7 @@ export default function OfficeFloorView({
             + Add Workspace
           </button>
         </div>
-      )}
-
-      {/* Empty slot for Project 02 */}
-      {projects.length < 2 && (
+      ) : (
         <div 
           className="office-room" 
           style={{ 
@@ -206,21 +265,23 @@ export default function OfficeFloorView({
             minHeight: '340px',
             textAlign: 'center',
             cursor: 'pointer',
-            opacity: projects.length === 0 ? 0.65 : 1
+            background: 'var(--bg-canvas)',
+            opacity: 0.9,
+            transition: 'all 0.2s ease'
           }}
           onClick={onOpenAddProject}
         >
-          <div style={{ width: '56px', height: '56px', borderRadius: '14px', background: 'var(--border-subtle)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '14px' }}>
+          <div style={{ width: '56px', height: '56px', borderRadius: '14px', background: 'var(--border-subtle)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '14px' }}>
             <FolderPlus size={28} />
           </div>
           <h3 style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
-            Connect Project 02
+            Connect Project {String(projects.length + 1).padStart(2, '0')}
           </h3>
           <p style={{ fontSize: '13px', color: 'var(--text-muted)', maxWidth: '280px', marginBottom: '16px' }}>
-            Run a second project concurrently with an independent team of AI specialists.
+            Run another project concurrently with an independent team of AI specialists.
           </p>
-          <button className="view-btn" style={{ fontSize: '12px', padding: '6px 14px' }}>
-            + Add Second Project
+          <button className="dispatch-btn" style={{ fontSize: '12px', padding: '7px 16px' }}>
+            + Add Project
           </button>
         </div>
       )}
