@@ -4,13 +4,20 @@ import time
 from typing import List, Optional, Dict, Any
 from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest
 
+from contextlib import contextmanager
+
 class StateStore:
     def __init__(self, db_path: str = "state.db"):
         self.db_path = db_path
         self._init_db()
 
+    @contextmanager
     def _get_conn(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._get_conn() as conn:

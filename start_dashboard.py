@@ -16,6 +16,14 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT_DIR, "backend"))
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
+# Ensure UTF-8 output on Windows consoles
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 def main():
     print("\n" + "="*60)
     print("🏢 ANTIGRAVITY VIRTUAL AI OFFICE - PM COMMAND CENTER 🏢")
@@ -25,7 +33,7 @@ def main():
     dist_dir = os.path.join(ROOT_DIR, "frontend", "dist")
     if not os.path.exists(dist_dir):
         print("📦 Building frontend production bundle...")
-        subprocess.run(["npm", "run", "build"], cwd=os.path.join(ROOT_DIR, "frontend"), check=True)
+        subprocess.run(["npm", "run", "build"], cwd=os.path.join(ROOT_DIR, "frontend"), check=True, shell=os.name == "nt")
 
     print("\n🚀 Starting FastAPI Orchestrator on http://127.0.0.1:8000 ...")
     print("✨ Features: Office Floor View, Dual Split View, Focus Room, Self-Healing Loop")

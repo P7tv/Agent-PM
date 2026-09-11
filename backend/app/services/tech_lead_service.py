@@ -90,8 +90,18 @@ class TechLeadService:
         msg_lower = message.lower()
 
         # 1. Real AI-Powered Response via Google Antigravity CLI (agy)
-        agy_path = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
-        if os.path.exists(agy_path) and not os.environ.get("PYTEST_CURRENT_TEST"):
+        default_win_agy = os.path.expanduser("~/AppData/Local/agy/bin/agy.exe")
+        agy_path = (
+            os.environ.get("AGY_PATH")
+            or (default_win_agy if os.path.exists(default_win_agy) else None)
+            or shutil.which("agy")
+            or shutil.which("agy.cmd")
+            or shutil.which("agy.exe")
+            or os.path.expanduser("~/.local/bin/agy")
+            or os.path.expanduser("~/AppData/Local/Programs/agy/agy.exe")
+        )
+        has_agy = bool(agy_path and os.path.exists(agy_path))
+        if has_agy and not os.environ.get("PYTEST_CURRENT_TEST"):
             try:
                 workspace = meta.get("path") or ""
                 purpose_desc = standup.get("purpose") or meta.get("purpose_summary") or meta.get("summary") or "Software application"
@@ -116,7 +126,8 @@ class TechLeadService:
                     capture_output=True,
                     text=True,
                     timeout=15.0,
-                    cwd=workspace if os.path.exists(workspace) else None
+                    cwd=workspace if os.path.exists(workspace) else None,
+                    shell=os.name == "nt"
                 )
                 if res.returncode == 0 and res.stdout.strip():
                     return {

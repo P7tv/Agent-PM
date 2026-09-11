@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 
-def test_api_projects_lifecycle():
+def test_api_projects_lifecycle(tmp_path):
     client = TestClient(app)
     
     # List projects
@@ -10,11 +10,14 @@ def test_api_projects_lifecycle():
     assert res.status_code == 200
     assert isinstance(res.json(), list)
     
+    workspace = tmp_path / "alpha"
+    workspace.mkdir(parents=True, exist_ok=True)
+
     # Register Project Alpha
     res = client.post("/api/projects", json={
         "project_id": "alpha",
         "name": "Alpha App",
-        "workspace_path": "/tmp/alpha",
+        "workspace_path": str(workspace),
         "auto_pilot": False
     })
     assert res.status_code == 200

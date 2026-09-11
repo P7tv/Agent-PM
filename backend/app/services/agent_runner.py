@@ -14,10 +14,23 @@ except ImportError:
 
 from app.services.skill_manager import SkillManager
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import shutil
 
-AGY_PATH = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
-HAS_AGY_CLI = os.path.exists(AGY_PATH)
+default_win_agy = os.path.expanduser("~/AppData/Local/agy/bin/agy.exe")
+
+AGY_PATH = (
+    os.environ.get("AGY_PATH")
+    or (default_win_agy if os.path.exists(default_win_agy) else None)
+    or shutil.which("agy")
+    or shutil.which("agy.cmd")
+    or shutil.which("agy.exe")
+    or os.path.expanduser("~/.local/bin/agy")
+    or os.path.expanduser("~/AppData/Local/Programs/agy/agy.exe")
+)
+HAS_AGY_CLI = bool(AGY_PATH and os.path.exists(AGY_PATH))
 
 ROLE_PROMPTS = {
     "TechLead": "You are the project tech lead. Coordinate tasks, resolve architectural blockers, track progress, and report clearly to the PM.",
@@ -141,22 +154,45 @@ class AgentRunner:
         if HAS_AGY_CLI and os.path.exists(AGY_PATH):
             try:
                 await emit("AGENT_THOUGHT_DELTA", {"thought": f"Executing with Google Antigravity CLI ({role})..."})
-                full_query = f"{system_instruction}\n\nPM Directive: {prompt}\n\nPlease respond concisely in Thai or English as {role}."
+                full_query = (
+                    f"{system_instruction}\n\n"
+                    f"PM Directive: {prompt}\n\n"
+                    f"If you create or update files, output each file using:\n"
+                    f"```filename: relative/path/to/file.ext\n<code content>\n```\n"
+                    f"Respond concisely in Thai or English as {role}."
+                )
+                cmd_args = [AGY_PATH, "--add-dir", workspace_path, "-p", full_query, "--dangerously-skip-permissions", "--effort", "low"]
+                if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):
+                    cmd_args = ["cmd.exe", "/c"] + cmd_args
                 proc = await asyncio.create_subprocess_exec(
-                    AGY_PATH,
-                    "--add-dir", workspace_path,
-                    "-p", full_query,
-                    "--dangerously-skip-permissions",
-                    "--effort", "low",
+                    *cmd_args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=workspace_path
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
                 if proc.returncode == 0:
                     text = stdout.decode("utf-8", errors="ignore").strip()
                     if text:
                         await emit("AGENT_THOUGHT_DELTA", {"thought": f"{role} processed directive successfully."})
+                        # Auto-extract and write code proposals to workspace
+                        try:
+                            from app.services.console_service import parse_code_proposals
+                            proposals = parse_code_proposals(text)
+                            for prop in proposals:
+                                fp = prop.get("filepath", "")
+                                cnt = prop.get("content", "")
+                                if fp and cnt and workspace_path and os.path.exists(workspace_path):
+                                    full_p = os.path.join(workspace_path, fp) if not os.path.isabs(fp) else fp
+                                    real_ws = os.path.realpath(workspace_path)
+                                    real_tgt = os.path.realpath(full_p)
+                                    if real_tgt.startswith(real_ws):
+                                        os.makedirs(os.path.dirname(real_tgt), exist_ok=True)
+                                        with open(real_tgt, "w", encoding="utf-8") as f:
+                                            f.write(cnt)
+                                        await emit("TOOL_EXECUTION_FINISH", {"tool": "write_file", "result": f"Saved {fp}"})
+                        except Exception:
+                            pass
                         await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
                         return {
                             "status": "SUCCESS",
@@ -228,12 +264,11 @@ class AgentRunner:
         # Try agy CLI first
         if HAS_AGY_CLI and os.path.exists(AGY_PATH):
             try:
+                cmd_args = [AGY_PATH, "--add-dir", workspace_path, "-p", full_prompt, "--dangerously-skip-permissions", "--effort", "low"]
+                if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):
+                    cmd_args = ["cmd.exe", "/c"] + cmd_args
                 proc = await asyncio.create_subprocess_exec(
-                    AGY_PATH,
-                    "--add-dir", workspace_path,
-                    "-p", full_prompt,
-                    "--dangerously-skip-permissions",
-                    "--effort", "low",
+                    *cmd_args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=workspace_path

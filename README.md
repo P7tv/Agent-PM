@@ -36,16 +36,43 @@ Manage teams of 5–10 autonomous agents across up to 2 concurrent projects. Sim
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Quickstart & Setup
 
-### 1. Launch the Dashboard
-Run the one-click startup script:
+### 1. Install Dependencies
+Install Python dependencies:
+```bash
+pip install -r requirements.txt
+```
 
+Install frontend dependencies and build production assets:
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+### 2. Configure Environment (Optional)
+Copy `.env.example` to `.env` if you wish to configure your Gemini API Key or custom Antigravity Skills directory:
+```bash
+cp .env.example .env
+```
+
+### 3. Launch the Dashboard
+Run the startup script:
+
+**On Windows:**
+Double-click `start.bat` or run:
+```powershell
+python start_dashboard.py
+```
+
+**On Linux / macOS:**
 ```bash
 python3 start_dashboard.py
 ```
 
-### 2. Open Your Browser
+### 4. Open Your Browser
 Navigate to:
 ```
 http://127.0.0.1:8000
@@ -55,8 +82,12 @@ http://127.0.0.1:8000
 
 ## 🧪 Running Automated Tests
 
-Run the full pytest suite:
+Run the full pytest suite (63/63 passing):
 
 ```bash
+# Windows (PowerShell)
+$env:PYTHONPATH="backend;.backend"; python -m pytest backend/tests/ -v
+
+# Linux / macOS
 PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 ```

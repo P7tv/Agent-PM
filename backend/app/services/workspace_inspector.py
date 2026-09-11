@@ -42,7 +42,21 @@ class WorkspaceInspector:
             return False, f"Path is a file, not a directory: '{resolved_path}'", {}
 
         # 3. Protected system directories guardrail
-        if resolved_path in DANGEROUS_PATHS or any(resolved_path.startswith(dp + "/") for dp in ["/System", "/private", "/dev"]):
+        drive, rest = os.path.splitdrive(resolved_path)
+        is_root = os.path.dirname(resolved_path) == resolved_path or rest in ["/", "\\", ""]
+
+        win_system_dirs = {
+            os.environ.get("SystemRoot", "C:\\Windows").lower(),
+            os.environ.get("ProgramFiles", "C:\\Program Files").lower(),
+            os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)").lower(),
+        }
+
+        if (
+            is_root
+            or resolved_path in DANGEROUS_PATHS
+            or any(resolved_path.startswith(dp + "/") or resolved_path.startswith(dp + "\\") for dp in ["/System", "/private", "/dev"])
+            or resolved_path.lower() in win_system_dirs
+        ):
             return False, f"Protected system directory cannot be used as a workspace: '{resolved_path}'", {}
 
         # 4. User home root guardrail (avoid accidental recursive scans of whole home dir)
