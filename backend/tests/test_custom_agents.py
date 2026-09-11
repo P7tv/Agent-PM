@@ -101,3 +101,47 @@ async def test_agent_runner_custom_role_persona(tmp_path):
     # Verify persona was reflected in events
     deltas = [d.get("thought", "") for ev, d in events if ev == "AGENT_THOUGHT_DELTA"]
     assert any("EVM" in d or "gas usage" in d for d in deltas)
+
+def test_custom_agent_api_endpoints(tmp_path, isolated_db):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    
+    workspace = tmp_path / "custom_ws"
+    workspace.mkdir()
+    
+    # Register project
+    res = client.post("/api/projects", json={
+        "project_id": "api-proj",
+        "name": "API Proj",
+        "workspace_path": str(workspace)
+    })
+    assert res.status_code == 200
+    
+    # 1. Add custom agent
+    res = client.post("/api/projects/api-proj/agents", json={
+        "role": "PerformanceAuditor",
+        "title": "Latency & Core Web Vitals Specialist",
+        "description": "Profiles memory consumption and render bottleneck.",
+        "skill_name": "performance-optimization"
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert data["role"] == "PerformanceAuditor"
+    assert data["skill_title"] == "Latency & Core Web Vitals Specialist"
+    
+    # 2. Delete custom agent
+    del_res = client.delete("/api/projects/api-proj/agents/PerformanceAuditor")
+    assert del_res.status_code == 200
+    assert del_res.json()["status"] == "DELETED"
+    
+    # 3. Cannot delete TechLead
+    del_tl = client.delete("/api/projects/api-proj/agents/TechLead")
+    assert del_tl.status_code == 400
+    
+    # 4. Auto-generate team
+    gen_res = client.post("/api/projects/api-proj/agents/auto-generate", json={"replace_existing": True})
+    assert gen_res.status_code == 200
+    gen_data = gen_res.json()
+    assert len(gen_data["agents"]) >= 3
+    assert any(a["role"] == "TechLead" for a in gen_data["agents"])

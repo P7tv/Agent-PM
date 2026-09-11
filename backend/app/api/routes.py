@@ -1,8 +1,11 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional
 import os
+import sys
+import time
+import shutil
 import uuid
 import asyncio
 import subprocess
@@ -16,7 +19,10 @@ from app.services.skill_manager import SkillManager
 from app.services.console_service import ConsoleService, parse_target_role
 from app.services.sprint_queue import SprintQueue
 from app.api.websocket_hub import hub
-from app.models.schemas import DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest, SetSkillModeRequest, SprintRecord, QueueItem
+from app.models.schemas import (
+    DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest,
+    SetSkillModeRequest, SprintRecord, QueueItem, CustomAgentCreateRequest, AutoGenerateRosterRequest
+)
 
 router = APIRouter(prefix="/api")
 
@@ -123,6 +129,48 @@ def get_project_sprints(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     return store.get_sprints(project_id)
 
+@router.get("/projects/{project_id}/sprints/{sprint_id}/export")
+def export_sprint_release_notes(project_id: str, sprint_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    sprint = store.get_sprint(sprint_id)
+    if not sprint:
+        raise HTTPException(status_code=404, detail="Sprint not found")
+    
+    started_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(sprint.started_at)) if sprint.started_at else "N/A"
+    completed_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(sprint.completed_at)) if sprint.completed_at else "In Progress"
+    duration = f"{int(sprint.completed_at - sprint.started_at)}s" if sprint.completed_at and sprint.started_at else "N/A"
+    
+    md = f"""# 🚀 Sprint Release Notes: {sprint.sprint_id}
+**Project:** {p.name} (`{project_id}`)  
+**Directive / Objective:** {sprint.directive}  
+**Status:** `{sprint.status}`  
+
+---
+
+## ⏱ Execution Summary
+- **Started At:** {started_str}
+- **Completed At:** {completed_str}
+- **Total Duration:** {duration}
+- **Tasks Executed:** {sprint.tasks_count}
+- **LLM Engine / Backend:** `{sprint.backend_used}`
+- **Total Tokens Consumed:** {sprint.total_tokens:,} tokens
+
+---
+
+## 📝 Release Summary & Highlights
+{sprint.release_summary or "No release summary recorded for this sprint."}
+
+---
+*Generated automatically by Agent-PM Autonomous Development Dashboard.*
+"""
+    return Response(
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="sprint-{sprint_id}-release-notes.md"'}
+    )
+
 @router.get("/projects/{project_id}/queue", response_model=List[QueueItem])
 def get_project_queue(project_id: str):
     p = store.get_project(project_id)
@@ -148,6 +196,31 @@ async def cancel_queue_directive(project_id: str, queue_id: str):
     if not cancelled:
         raise HTTPException(status_code=404, detail="Queue item not found or already running")
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "cancelled_id": queue_id})
+    return {"status": "CANCELLED", "queue_id": queue_id}
+
+@router.get("/queue/all")
+def get_all_queue():
+    items = store.get_all_queue_items()
+    projects = {p.project_id: p.name for p in store.list_projects()}
+    result = []
+    for it in items:
+        result.append({
+            "queue_id": it.queue_id,
+            "project_id": it.project_id,
+            "project_name": projects.get(it.project_id, it.project_id),
+            "directive": it.directive,
+            "status": it.status,
+            "position": it.position,
+            "created_at": it.created_at
+        })
+    return result
+
+@router.delete("/queue/{queue_id}")
+async def cancel_global_queue_item(queue_id: str):
+    cancelled = sprint_queue.cancel_item(queue_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Queue item not found or already running")
+    await hub.broadcast("QUEUE_UPDATED", {"cancelled_id": queue_id})
     return {"status": "CANCELLED", "queue_id": queue_id}
 
 @router.get("/projects/{project_id}/files")
@@ -209,6 +282,70 @@ def get_project_file_content(project_id: str, path: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/projects/{project_id}/agents")
+def get_project_agents(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.get_all_agent_states(project_id)
+
+@router.post("/projects/{project_id}/agents")
+async def add_project_agent(project_id: str, req: CustomAgentCreateRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    clean_role = "".join(c for c in req.role if c.isalnum() or c in ("_", "-"))
+    if not clean_role:
+        raise HTTPException(status_code=400, detail="Invalid role identifier")
+        
+    agent = store.add_agent(
+        project_id=project_id,
+        role=clean_role,
+        title=req.title,
+        description=req.description,
+        skill_name=req.skill_name,
+        skill_tier=req.skill_tier or "stock"
+    )
+    await hub.broadcast("AGENT_STATE_UPDATE", {
+        "project_id": project_id,
+        "role": clean_role,
+        "status": "IDLE",
+        "thought": req.description
+    })
+    return agent
+
+@router.delete("/projects/{project_id}/agents/{role}")
+async def delete_project_agent(project_id: str, role: str):
+    if role == "TechLead":
+        raise HTTPException(status_code=400, detail="Cannot delete project TechLead")
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    deleted = store.delete_agent(project_id, role)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Agent not found in project")
+        
+    await hub.broadcast("AGENT_DELETED", {
+        "project_id": project_id,
+        "role": role
+    })
+    return {"status": "DELETED", "role": role}
+
+@router.post("/projects/{project_id}/agents/auto-generate")
+async def auto_generate_project_agents(project_id: str, req: AutoGenerateRosterRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    res = tech_lead_svc.auto_generate_roster(project_id, replace_existing=req.replace_existing)
+    await hub.broadcast("AGENT_ROSTER_UPDATED", {
+        "project_id": project_id,
+        "agents": res.get("agents", [])
+    })
+    return res
+
 @router.get("/projects/{project_id}/approvals")
 def get_project_approvals(project_id: str):
     return store.get_pending_approvals(project_id)
@@ -269,21 +406,23 @@ async def whisper_to_agent(project_id: str, req: WhisperRequest, bg: BackgroundT
     return {"status": "WHISPER_SENT", "role": req.role}
 
 @router.post("/projects/{project_id}/directive")
-async def send_directive(project_id: str, req: DirectiveRequest, bg: BackgroundTasks):
+async def send_directive(project_id: str, req: DirectiveRequest):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
         
-    async def run_pipeline():
-        await hub.broadcast("DIRECTIVE_STARTED", {"project_id": project_id, "directive": req.directive})
-        await orchestrator.execute_pm_directive(
-            project_id=project_id,
-            directive=req.directive,
-            event_callback=hub.broadcast
-        )
-        
-    bg.add_task(run_pipeline)
-    return {"status": "QUEUED", "project_id": project_id, "directive": req.directive}
+    item = sprint_queue.enqueue(project_id, req.directive)
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
+    return {"status": "QUEUED", "project_id": project_id, "directive": req.directive, "queue_id": item.queue_id}
+
+@router.post("/projects/{project_id}/sprints/abort")
+async def abort_sprint(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    orchestrator.abort_pipeline(project_id)
+    await hub.broadcast("PIPELINE_HALTED", {"project_id": project_id, "summary": "Sprint aborted by PM."})
+    return {"status": "ABORTED", "project_id": project_id}
 
 @router.post("/projects/{project_id}/standup")
 def get_standup(project_id: str):
@@ -313,6 +452,18 @@ def init_project_git(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     res = git_svc.init_repository(p.workspace_path)
     return res
+
+@router.get("/projects/{project_id}/git/patch")
+def export_git_patch(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    patch = git_svc.get_patch(p.workspace_path)
+    return Response(
+        content=patch,
+        media_type="text/x-diff",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}-changes.patch"'}
+    )
 
 @router.get("/skills")
 def list_global_skills():
@@ -658,7 +809,8 @@ async def console_chat(project_id: str, req: ConsoleChatRequest, bg: BackgroundT
                 content=response_text,
                 msg_type=msg_type,
                 role=target_role,
-                code_proposals=code_proposals
+                code_proposals=code_proposals,
+                active_skills=result.get("active_skills", [])
             )
 
             await hub.broadcast("CONSOLE_MESSAGE", agent_msg.to_dict())
@@ -759,19 +911,23 @@ async def run_tests(project_id: str):
 
     workspace = p.workspace_path
 
-    # Detect test framework
+    # Detect test framework with cross-platform binary resolution
     test_cmd = None
     if os.path.exists(os.path.join(workspace, "package.json")):
-        test_cmd = ["npm", "test", "--", "--watchAll=false"]
+        npm_bin = shutil.which("npm") or ("npm.cmd" if os.name == "nt" else "npm")
+        test_cmd = [npm_bin, "test", "--", "--watchAll=false"]
     elif os.path.exists(os.path.join(workspace, "pytest.ini")) or os.path.exists(os.path.join(workspace, "setup.py")):
-        test_cmd = ["python", "-m", "pytest", "-v"]
+        test_cmd = [sys.executable, "-m", "pytest", "-v"]
     elif os.path.exists(os.path.join(workspace, "go.mod")):
-        test_cmd = ["go", "test", "./..."]
+        go_bin = shutil.which("go") or "go"
+        test_cmd = [go_bin, "test", "./..."]
     elif os.path.exists(os.path.join(workspace, "Cargo.toml")):
-        test_cmd = ["cargo", "test"]
+        cargo_bin = shutil.which("cargo") or "cargo"
+        test_cmd = [cargo_bin, "test"]
     else:
         # Default: try npm test
-        test_cmd = ["npm", "test", "--", "--watchAll=false"]
+        npm_bin = shutil.which("npm") or ("npm.cmd" if os.name == "nt" else "npm")
+        test_cmd = [npm_bin, "test", "--", "--watchAll=false"]
 
     try:
         proc = await asyncio.create_subprocess_exec(

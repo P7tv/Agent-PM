@@ -26,11 +26,17 @@ def isolated_db(monkeypatch):
     test_pm = ProjectManager(store=test_store)
     test_runner = AgentRunner(use_mock=True)
     test_orchestrator = Orchestrator(store=test_store, project_manager=test_pm, agent_runner=test_runner)
+    from app.services.sprint_queue import SprintQueue
+    test_queue = SprintQueue(store=test_store, orchestrator=test_orchestrator)
+    from app.services.tech_lead_service import TechLeadService
+    test_tech_lead = TechLeadService(store=test_store, pm=test_pm)
 
     monkeypatch.setattr(routes_module, "store", test_store)
     monkeypatch.setattr(routes_module, "pm", test_pm)
     monkeypatch.setattr(routes_module, "runner", test_runner)
     monkeypatch.setattr(routes_module, "orchestrator", test_orchestrator)
+    monkeypatch.setattr(routes_module, "sprint_queue", test_queue)
+    monkeypatch.setattr(routes_module, "tech_lead_svc", test_tech_lead)
 
     yield test_store
 
