@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { 
   Building2, 
   Columns, 
@@ -14,7 +14,7 @@ import {
 import PMCommandBar from './components/PMCommandBar';
 import OfficeFloorView from './components/OfficeFloorView';
 import DualSplitView from './components/DualSplitView';
-import FocusRoomView from './components/FocusRoomView';
+const FocusRoomView = lazy(() => import('./components/FocusRoomView'));
 import { DecisionGateModal } from './components/DecisionGateModal';
 import AddProjectModal from './components/AddProjectModal';
 import TechLeadStandupModal from './components/TechLeadStandupModal';
@@ -118,6 +118,8 @@ function AppContent() {
   const [backlogProject, setBacklogProject] = useState(null); // { projectId, projectName }
   const [journalProject, setJournalProject] = useState(null); // { projectId, projectName }
   const [completedSprint, setCompletedSprint] = useState(null); // { sprint data for modal }
+  const [runtime, setRuntime] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [globalQueue, setGlobalQueue] = useState([]);
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(Boolean(initialRoute.openQueue));
@@ -154,11 +156,23 @@ function AppContent() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
+  const requestJson = async (url, options) => {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${res.status})`);
+    return data;
+  };
+
+  const fetchRuntime = async () => {
+    try { setRuntime(await requestJson('/api/runtime')); }
+    catch (error) { setRuntime({ available: false, mode: 'offline', message: `เชื่อมต่อ backend ไม่สำเร็จ: ${error.message}` }); }
+  };
+
   // Fetch projects and initial data
   const fetchData = async () => {
     try {
-      const res = await fetch('/api/projects');
-      const data = await res.json();
+      const data = await requestJson('/api/projects');
+      setLoadError(null);
       
       setProjects(data);
       setIsLoadingProjects(false);
@@ -209,6 +223,8 @@ function AppContent() {
       }
       fetchGlobalQueue();
     } catch (err) {
+      setIsLoadingProjects(false);
+      setLoadError(err.message);
       console.error('Error fetching initial data:', err);
     }
   };
@@ -303,8 +319,13 @@ function AppContent() {
   // Setup WebSocket connection
   useEffect(() => {
     fetchData();
+    fetchRuntime();
+    let disposed = false;
+    let reconnectTimer;
+    let hasConnected = false;
 
     const connectWs = () => {
+      if (disposed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws/live`;
       const ws = new WebSocket(wsUrl);
@@ -312,6 +333,9 @@ function AppContent() {
 
       ws.onopen = () => {
         setWsConnected(true);
+        if (hasConnected) fetchData();
+        hasConnected = true;
+        fetchRuntime();
       };
 
       ws.onmessage = (event) => {
@@ -325,7 +349,7 @@ function AppContent() {
           if (projId) {
             setLiveStreams((prev) => ({
               ...prev,
-              [projId]: [...(prev[projId] || []), data]
+              [projId]: [...(prev[projId] || []).slice(-299), data]
             }));
           }
 
@@ -341,7 +365,22 @@ function AppContent() {
           }
 
           // Handle state updates
-          if (['AGENT_STATE_UPDATE', 'AGENT_STATUS_CHANGE', 'AGENT_ROSTER_UPDATED', 'AGENT_DELETED'].includes(evType)) {
+          if (['AGENT_STATE_UPDATE', 'AGENT_STATUS_CHANGE', 'AGENT_THOUGHT_DELTA', 'AGENT_PROGRESS'].includes(evType)) {
+            setAgentStates(prev => {
+              const agents = [...(prev[projId] || [])];
+              const index = agents.findIndex(agent => agent.role === data.role);
+              const patch = { ...data, thought: data.thought || data.message };
+              Object.keys(patch).forEach(key => patch[key] === undefined && delete patch[key]);
+              if (index >= 0) agents[index] = { ...agents[index], ...patch };
+              else if (data.role) agents.push({ status: 'IDLE', ...patch });
+              return { ...prev, [projId]: agents };
+            });
+            if (evType === 'AGENT_STATE_UPDATE') {
+              fetch(`/api/projects/${projId}/tasks`).then(r => r.json()).then(tasks => {
+                if (Array.isArray(tasks)) setTasksByProject(prev => ({ ...prev, [projId]: tasks }));
+              }).catch(console.error);
+            }
+          } else if (['AGENT_ROSTER_UPDATED', 'AGENT_DELETED'].includes(evType)) {
             fetchProjectDetails(projId);
           } else if (evType === 'TASKS_UPDATED') {
             fetch(`/api/projects/${projId}/tasks`)
@@ -352,12 +391,13 @@ function AppContent() {
           } else if (evType === 'DECISION_GATE_OPEN') {
             setActiveApproval(data);
           } else if (evType === 'DECISION_GATE_RESOLVED') {
-            setActiveApproval(null);
+            setActiveApproval(current => current?.request_id === data.request_id ? null : current);
           } else if (evType === 'PROJECT_DELETED') {
             fetchData();
           } else if (evType === 'PIPELINE_COMPLETED') {
             if (projId) {
               fetchSprints(projId);
+              fetchProjectDetails(projId);
               // Show sprint completion modal with release summary
               setCompletedSprint({
                 sprint_id: data.sprint_id,
@@ -371,7 +411,11 @@ function AppContent() {
               });
             }
           } else if (['SPRINT_STARTED', 'PIPELINE_REJECTED', 'PIPELINE_HALTED'].includes(evType)) {
-            if (projId) fetchSprints(projId);
+            if (projId) {
+              fetchSprints(projId);
+              fetchProjectDetails(projId);
+              if (evType !== 'SPRINT_STARTED') toast.error(data.summary || 'Sprint stopped');
+            }
           } else if (['QUEUE_UPDATED', 'QUEUE_ITEM_STARTED', 'QUEUE_ITEM_FINISHED', 'DIRECTIVE_STARTED'].includes(evType)) {
             fetchGlobalQueue();
           } else if (evType === 'CONSOLE_MESSAGE') {
@@ -379,7 +423,7 @@ function AppContent() {
             if (projId) {
               setConsoleHistories((prev) => ({
                 ...prev,
-                [projId]: [...(prev[projId] || []), data]
+                [projId]: [...(prev[projId] || []).filter(msg => !data.message_id || msg.message_id !== data.message_id).slice(-199), data]
               }));
             }
           }
@@ -390,7 +434,7 @@ function AppContent() {
 
       ws.onclose = () => {
         setWsConnected(false);
-        setTimeout(connectWs, 2000);
+        if (!disposed) reconnectTimer = setTimeout(connectWs, 2000);
       };
 
       ws.onerror = () => {
@@ -401,7 +445,9 @@ function AppContent() {
     connectWs();
 
     return () => {
-      if (socketRef.current) socketRef.current.close();
+      disposed = true;
+      clearTimeout(reconnectTimer);
+      if (socketRef.current) { socketRef.current.onclose = null; socketRef.current.close(); }
     };
   }, []);
 
@@ -416,18 +462,21 @@ function AppContent() {
   }, [isQueueDrawerOpen]);
 
   const handleDispatchDirective = async (projectId, directive) => {
-    await fetch(`/api/projects/${projectId}/directive`, {
+    const result = await requestJson(`/api/projects/${projectId}/directive`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ directive })
     });
     fetchProjectDetails(projectId);
     fetchGlobalQueue();
+    handleFocusProject(projectId);
+    toast.success('รับคำสั่งเข้าคิวแล้ว ติดตามขั้นตอนและผลลัพธ์ในแชตนี้');
+    return result;
   };
 
   const handleResolveApproval = async (requestId, decision) => {
     if (!activeApproval) return;
-    await fetch(`/api/projects/${activeApproval.project_id}/approvals/${requestId}`, {
+    await requestJson(`/api/projects/${activeApproval.project_id}/approvals/${requestId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision })
@@ -445,7 +494,7 @@ function AppContent() {
   };
 
   const handleSendConsoleMessage = async (projectId, message, attachments = [], isDirective = false) => {
-    await fetch(`/api/projects/${projectId}/console/chat`, {
+    await requestJson(`/api/projects/${projectId}/console/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, attachments, is_directive: isDirective })
@@ -680,6 +729,14 @@ function AppContent() {
         </div>
       </header>
 
+      <div className="runtime-banner" role="status">
+        <strong>AI: {runtime?.mode || 'checking'}</strong>
+        <span>{runtime?.message || 'กำลังตรวจ AI runtime…'}</span>
+        {!wsConnected && <span>การอัปเดตสดขาดการเชื่อมต่อ กำลังเชื่อมต่อใหม่…</span>}
+        <button type="button" className="view-btn" onClick={fetchRuntime}>ตรวจอีกครั้ง</button>
+      </div>
+      {loadError && <div className="runtime-banner" role="alert">โหลดโปรเจกต์ไม่สำเร็จ: {loadError}<button className="view-btn" onClick={fetchData}>ลองใหม่</button></div>}
+
       {/* Global Queue Drawer */}
       {isQueueDrawerOpen && (
         <>
@@ -818,6 +875,7 @@ function AppContent() {
 
       {/* Main Viewport */}
       <main className="content-area">
+        <Suspense fallback={<div role="status" style={{ padding: 24 }}>กำลังโหลดพื้นที่ทำงาน…</div>}>
         {viewMode === 'OFFICE' && (
           <OfficeFloorView
             key="office"
@@ -871,6 +929,7 @@ function AppContent() {
 
         {viewMode === 'FOCUS' && focusedProject && (
           <FocusRoomView
+            key={focusedProjectId}
             project={focusedProject}
             initialTab={activeTabFromRoute}
             onTabChange={(tab) => {
@@ -891,10 +950,12 @@ function AppContent() {
             onDeleteProject={handleDeleteProject}
           />
         )}
+      </Suspense>
       </main>
 
       {/* Modals */}
       <DecisionGateModal
+        key={activeApproval?.request_id}
         approval={activeApproval}
         onResolve={handleResolveApproval}
       />
@@ -978,4 +1039,3 @@ function AppContent() {
     </div>
   );
 }
-

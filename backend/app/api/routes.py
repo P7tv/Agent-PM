@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, field_validator
+from typing import List, Optional, Literal
 import os
 import sys
 import time
@@ -28,7 +28,7 @@ from app.models.schemas import (
 router = APIRouter(prefix="/api")
 
 # Default database in project directory
-db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state.db")
+db_path = os.environ.get("PM_STATE_DB") or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state.db")
 store = StateStore(db_path=db_path)
 pm = ProjectManager(store=store)
 runner = AgentRunner(use_mock=False, store=store)
@@ -54,8 +54,16 @@ class LeadChatRequest(BaseModel):
 class DirectiveRequest(BaseModel):
     directive: str
 
+    @field_validator("directive")
+    @classmethod
+    def nonempty_directive(cls, value):
+        if not value.strip():
+            raise ValueError("Directive cannot be empty")
+        return value.strip()
+
+
 class ApprovalDecisionRequest(BaseModel):
-    decision: str  # APPROVED / REJECTED
+    decision: Literal["APPROVED", "REJECTED"]
 
 class WhisperRequest(BaseModel):
     role: str
@@ -121,6 +129,11 @@ def validate_path(req: ValidatePathRequest):
         "message": msg,
         "metadata": meta
     }
+
+@router.get("/runtime")
+def get_runtime():
+    return runner.runtime_status()
+
 
 @router.get("/projects")
 def get_projects():
@@ -240,6 +253,8 @@ async def enqueue_project_directive(project_id: str, req: DirectiveRequest):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    if not runner.runtime_status()["available"]:
+        raise HTTPException(status_code=503, detail=runner.runtime_status()["message"])
     item = sprint_queue.enqueue(project_id, req.directive)
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
     return item
@@ -272,7 +287,6 @@ def get_all_queue():
             "created_at": it.created_at
         })
     return result
-
 @router.delete("/queue/{queue_id}")
 async def cancel_global_queue_item(queue_id: str):
     cancelled = sprint_queue.cancel_item(queue_id)
@@ -581,6 +595,8 @@ def get_project_approvals(project_id: str):
 
 @router.post("/projects/{project_id}/approvals/{request_id}")
 async def resolve_approval(project_id: str, request_id: str, req: ApprovalDecisionRequest):
+    if not any(a.request_id == request_id for a in store.get_pending_approvals(project_id)):
+        raise HTTPException(status_code=404, detail="Pending approval not found for this project")
     store.resolve_approval(request_id, req.decision)
     # Signal the orchestrator to unblock the pipeline
     orchestrator.resolve_gate(request_id, req.decision)
@@ -614,6 +630,8 @@ async def whisper_to_agent(project_id: str, req: WhisperRequest, bg: BackgroundT
                 project_context=meta,
                 event_callback=hub.broadcast
             )
+            if res.get("status") != "SUCCESS":
+                raise RuntimeError(res.get("error") or res.get("response") or "AI failed")
             final_thought = res.get("response") or f"Acknowledged: {req.message}"
             store.set_agent_status(project_id, req.role, "IDLE", final_thought)
             await hub.broadcast("AGENT_STATE_UPDATE", {
@@ -640,6 +658,8 @@ async def send_directive(project_id: str, req: DirectiveRequest):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
         
+    if not runner.runtime_status()["available"]:
+        raise HTTPException(status_code=503, detail=runner.runtime_status()["message"])
     item = sprint_queue.enqueue(project_id, req.directive)
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
     return {"status": "QUEUED", "project_id": project_id, "directive": req.directive, "queue_id": item.queue_id}
@@ -1035,6 +1055,10 @@ async def console_chat(project_id: str, req: ConsoleChatRequest, bg: BackgroundT
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if not req.message.strip():
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    if not runner.runtime_status()["available"]:
+        raise HTTPException(status_code=503, detail=runner.runtime_status()["message"])
     # Parse @Role mention
     target_role, clean_message = parse_target_role(req.message)
 
@@ -1100,9 +1124,12 @@ async def console_chat(project_id: str, req: ConsoleChatRequest, bg: BackgroundT
                 workspace_path=p.workspace_path,
                 project_context=meta,
                 conversation_context=conversation_context,
-                attachments=req.attachments
+                attachments=req.attachments,
+                event_callback=hub.broadcast
             )
 
+            if result.get("status") != "SUCCESS":
+                raise RuntimeError(result.get("error") or result.get("response") or "AI failed")
             response_text = result.get("response", "")
             code_proposals = result.get("code_proposals", [])
 
@@ -1142,7 +1169,8 @@ async def console_chat(project_id: str, req: ConsoleChatRequest, bg: BackgroundT
                 "content": error_msg,
                 "msg_type": "system"
             })
-            store.set_agent_status(project_id, target_role, "IDLE", error_msg[:80])
+            store.set_agent_status(project_id, target_role, "BLOCKED", error_msg[:200])
+            await hub.broadcast("AGENT_STATE_UPDATE", {"project_id": project_id, "role": target_role, "status": "BLOCKED", "thought": error_msg})
 
     bg.add_task(run_console_chat)
 
@@ -1214,70 +1242,11 @@ async def run_tests(project_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    workspace = p.workspace_path
-
-    # Detect test framework with cross-platform binary resolution
-    test_cmd = None
-    if os.path.exists(os.path.join(workspace, "package.json")):
-        npm_bin = shutil.which("npm") or ("npm.cmd" if os.name == "nt" else "npm")
-        test_cmd = [npm_bin, "test", "--", "--watchAll=false"]
-    elif os.path.exists(os.path.join(workspace, "pytest.ini")) or os.path.exists(os.path.join(workspace, "setup.py")):
-        test_cmd = [sys.executable, "-m", "pytest", "-v"]
-    elif os.path.exists(os.path.join(workspace, "go.mod")):
-        go_bin = shutil.which("go") or "go"
-        test_cmd = [go_bin, "test", "./..."]
-    elif os.path.exists(os.path.join(workspace, "Cargo.toml")):
-        cargo_bin = shutil.which("cargo") or "cargo"
-        test_cmd = [cargo_bin, "test"]
-    else:
-        # Default: try npm test
-        npm_bin = shutil.which("npm") or ("npm.cmd" if os.name == "nt" else "npm")
-        test_cmd = [npm_bin, "test", "--", "--watchAll=false"]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *test_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=workspace
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
-
-        output = stdout.decode("utf-8", errors="ignore")
-        errors = stderr.decode("utf-8", errors="ignore")
-        passed = proc.returncode == 0
-
-        result = {
-            "status": "PASSED" if passed else "FAILED",
-            "exit_code": proc.returncode,
-            "stdout": output[-3000:],  # Last 3KB
-            "stderr": errors[-1000:],
-            "command": " ".join(test_cmd)
-        }
-
-        console_svc.add_message(
-            project_id=project_id,
-            sender="QATester",
-            content=f"Test run {'✅ PASSED' if passed else '❌ FAILED'}: `{' '.join(test_cmd)}`",
-            msg_type="qa_result",
-            qa_results=result
-        )
-
-        return result
-
-    except asyncio.TimeoutError:
-        return {
-            "status": "TIMEOUT",
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": "Test execution timed out after 120 seconds.",
-            "command": " ".join(test_cmd)
-        }
-    except Exception as e:
-        return {
-            "status": "ERROR",
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "command": " ".join(test_cmd)
-        }
+    from app.services.verification import verify_workspace
+    result = await verify_workspace(p.workspace_path)
+    msg = console_svc.add_message(
+        project_id=project_id, sender="QATester",
+        content=f"Test run {result['status']}: `{result['command']}`",
+        msg_type="qa_result", qa_results=result)
+    await hub.broadcast("CONSOLE_MESSAGE", msg.to_dict())
+    return result

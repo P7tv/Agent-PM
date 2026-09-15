@@ -224,6 +224,7 @@ export default function FocusRoomView({
             body: formData
           });
           const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Upload failed');
           if (data.status === 'SUCCESS') {
             uploadedAttachments.push(data);
           }
@@ -232,12 +233,13 @@ export default function FocusRoomView({
 
       if (onSendConsoleMessage) {
         await onSendConsoleMessage(project.project_id, textToSend, uploadedAttachments, isDirective);
+        setConsoleInput('');
+        setPendingAttachments([]);
       }
     } catch (err) {
       console.error('Console send error:', err);
+      throw err;
     } finally {
-      setConsoleInput('');
-      setPendingAttachments([]);
       setIsSending(false);
     }
   };
@@ -730,7 +732,7 @@ export default function FocusRoomView({
 
 
       {/* Sprint Pipeline Stepper (UI/UX Pro Max) */}
-      <SprintPipelineStepper agents={agents} sprints={sprints} />
+      <SprintPipelineStepper agents={agents} tasks={tasks} sprints={sprints} events={timelineEvents} />
 
       {/* Main Focus Room Layout */}
       <div className="focus-room-layout">

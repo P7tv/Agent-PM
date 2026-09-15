@@ -1,0 +1,162 @@
+"""Stage sprint edits outside the registered workspace and commit them atomically."""
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import tempfile
+from typing import Dict, Iterable
+
+
+IGNORED_NAMES = {
+    ".git", ".hg", ".svn", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".next", ".cache", "__pycache__", "node_modules", "dist", "build",
+    "coverage", ".coverage", ".DS_Store",
+}
+DEPENDENCY_DIRS = {"node_modules", ".venv", "venv"}
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def snapshot_workspace(root: str | Path) -> Dict[str, str]:
+    """Return a stable content map while excluding generated/dependency trees."""
+    base = Path(root).resolve()
+    result: Dict[str, str] = {}
+    for current, dirs, files in os.walk(base, followlinks=False):
+        current_path = Path(current)
+        dirs[:] = [name for name in dirs if name not in IGNORED_NAMES and not (current_path / name).is_symlink()]
+        for name in files:
+            if name in IGNORED_NAMES:
+                continue
+            path = current_path / name
+            rel = path.relative_to(base).as_posix()
+            try:
+                if path.is_symlink():
+                    result[rel] = "link:" + os.readlink(path)
+                elif path.is_file():
+                    digest = hashlib.sha256()
+                    with path.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    result[rel] = "file:" + digest.hexdigest()
+            except (OSError, PermissionError):
+                continue
+    return result
+
+
+def changed_paths(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, list[str]]:
+    added = sorted(set(after) - set(before))
+    deleted = sorted(set(before) - set(after))
+    modified = sorted(path for path in set(before) & set(after) if before[path] != after[path])
+    return {"added": added, "modified": modified, "deleted": deleted}
+
+
+def flatten_changes(changes: Dict[str, Iterable[str]]) -> list[str]:
+    return sorted({path for values in changes.values() for path in values})
+
+
+class WorkspaceSession:
+    """A disposable source copy with conflict detection at commit time."""
+
+    def __init__(self, original: str):
+        self.original = Path(original).resolve()
+        self.temp_root = Path(tempfile.mkdtemp(prefix="pm-sprint-"))
+        self.workspace = self.temp_root / "workspace"
+        self._copy_source()
+        self.original_baseline = snapshot_workspace(self.original)
+        self.staged_baseline = snapshot_workspace(self.workspace)
+
+    def _ignore(self, directory: str, names: list[str]) -> set[str]:
+        parent = Path(directory)
+        ignored = {name for name in names if name in IGNORED_NAMES or name in DEPENDENCY_DIRS}
+        for name in names:
+            path = parent / name
+            if path.is_symlink() and not _inside(path, self.original):
+                ignored.add(name)
+        return ignored
+
+    def _copy_source(self) -> None:
+        shutil.copytree(self.original, self.workspace, symlinks=True, ignore=self._ignore)
+        # Tests and builds can reuse installed dependencies. They remain outside
+        # the content snapshot and are never copied back into the project.
+        for current, dirs, _files in os.walk(self.original, followlinks=False):
+            current_path = Path(current)
+            for name in list(dirs):
+                if name in DEPENDENCY_DIRS:
+                    source = current_path / name
+                    relative = source.relative_to(self.original)
+                    target = self.workspace / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        target.symlink_to(source, target_is_directory=True)
+                    except FileExistsError:
+                        pass
+                    dirs.remove(name)
+                elif name in IGNORED_NAMES or (current_path / name).is_symlink():
+                    dirs.remove(name)
+
+    def changes(self) -> Dict[str, list[str]]:
+        return changed_paths(self.staged_baseline, snapshot_workspace(self.workspace))
+
+    def commit(self) -> Dict[str, list[str]]:
+        changes = self.changes()
+        paths = flatten_changes(changes)
+        current = snapshot_workspace(self.original)
+        conflicts = [path for path in paths if current.get(path) != self.original_baseline.get(path)]
+        if conflicts:
+            raise RuntimeError("Workspace changed during sprint: " + ", ".join(conflicts[:20]))
+
+        backup = self.temp_root / "backup"
+        backup.mkdir()
+        existed: set[str] = set()
+        try:
+            for rel in paths:
+                destination = self.original / rel
+                if destination.exists() or destination.is_symlink():
+                    existed.add(rel)
+                    saved = backup / rel
+                    saved.parent.mkdir(parents=True, exist_ok=True)
+                    if destination.is_symlink():
+                        saved.symlink_to(os.readlink(destination))
+                    else:
+                        shutil.copy2(destination, saved)
+
+            for rel in changes["deleted"]:
+                destination = self.original / rel
+                if destination.is_file() or destination.is_symlink():
+                    destination.unlink()
+            for rel in changes["added"] + changes["modified"]:
+                source = self.workspace / rel
+                destination = self.original / rel
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists() or destination.is_symlink():
+                    destination.unlink()
+                if source.is_symlink():
+                    destination.symlink_to(os.readlink(source))
+                else:
+                    shutil.copy2(source, destination)
+        except Exception:
+            for rel in paths:
+                destination = self.original / rel
+                if destination.exists() or destination.is_symlink():
+                    destination.unlink()
+                if rel in existed:
+                    saved = backup / rel
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if saved.is_symlink():
+                        destination.symlink_to(os.readlink(saved))
+                    else:
+                        shutil.copy2(saved, destination)
+            raise
+        return changes
+
+    def close(self) -> None:
+        shutil.rmtree(self.temp_root, ignore_errors=True)
+

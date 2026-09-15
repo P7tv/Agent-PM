@@ -31,6 +31,8 @@ def isolated_db(monkeypatch):
     from app.services.tech_lead_service import TechLeadService
     test_tech_lead = TechLeadService(store=test_store, pm=test_pm)
 
+    from app.services.console_service import ConsoleService
+    monkeypatch.setattr(routes_module, "console_svc", ConsoleService(store=test_store))
     monkeypatch.setattr(routes_module, "store", test_store)
     monkeypatch.setattr(routes_module, "pm", test_pm)
     monkeypatch.setattr(routes_module, "runner", test_runner)

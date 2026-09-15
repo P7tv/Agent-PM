@@ -1,6 +1,9 @@
 import React, { useRef, useEffect } from 'react';
 
 const EVENT_CONFIG = {
+  AGENT_PROGRESS: { icon: '⏳', badgeCls: 'badge-sky', label: 'ความคืบหน้า' },
+  AGENT_ERROR: { icon: '⚠️', badgeCls: 'badge-red', label: 'ข้อผิดพลาด' },
+  AGENT_THOUGHT_DELTA: { icon: '💬', badgeCls: 'badge-sky', label: 'อัปเดต' },
   AGENT_STATUS_CHANGE:  { icon: '⚡', badgeCls: 'badge-indigo', label: 'Status' },
   AGENT_STATE_UPDATE:   { icon: '🤖', badgeCls: 'badge-sky',    label: 'State' },
   AGENT_RESPONSE:       { icon: '💬', badgeCls: 'badge-teal',   label: 'Response' },
@@ -12,16 +15,34 @@ const EVENT_CONFIG = {
   PIPELINE_REJECTED:    { icon: '🛑', badgeCls: 'badge-rose',   label: 'Rejected' },
   PIPELINE_HALTED:      { icon: '⚠️', badgeCls: 'badge-red',    label: 'Halted' },
   SPRINT_STARTED:       { icon: '🚀', badgeCls: 'badge-blue',   label: 'Sprint Start' },
+  EXECUTION_PLAN_READY: { icon: '🗺️', badgeCls: 'badge-indigo', label: 'Execution Plan' },
+  AGENT_EVIDENCE:       { icon: '📁', badgeCls: 'badge-emerald', label: 'File Evidence' },
+  WORKSPACE_COMMITTED:  { icon: '📦', badgeCls: 'badge-green', label: 'Applied' },
   QUEUE_ITEM_STARTED:   { icon: '⏳', badgeCls: 'badge-cyan',   label: 'Queue' },
+  QUEUE_ITEM_FINISHED:  { icon: '🏁', badgeCls: 'badge-slate',  label: 'Queue Done' },
 };
 
 function getEventDescription(ev) {
   const d = ev.data || {};
   if (ev.type === 'AGENT_RESPONSE') {
-    const preview = d.response ? d.response.slice(0, 100) + (d.response.length > 100 ? '…' : '') : '(no preview)';
+    const preview = d.response || '(no preview)';
     return `[${d.step_label || 'Task'}] ${preview}`;
   }
-  return d.thought || d.summary || d.directive || d.tool || JSON.stringify(d);
+  return d.message || d.result || d.thought || d.summary || d.directive || d.tool || JSON.stringify(d);
+}
+
+function EventDetails({ event }) {
+  const data = event.data || {};
+  if (event.type === 'AGENT_RESPONSE') {
+    return <details><summary>{data.step_label || 'ผลการทำงาน'} — คลิกอ่าน</summary><div style={{ whiteSpace: 'pre-wrap' }}>{data.response}</div></details>;
+  }
+  if (event.type === 'EXECUTION_PLAN_READY') {
+    return <details><summary>{data.summary}</summary><div>Agents: {(data.roles || []).join(', ')}</div><div style={{ whiteSpace: 'pre-wrap' }}>{(data.acceptance_criteria || []).map(item => `• ${item}`).join('\n')}</div></details>;
+  }
+  if (['AGENT_EVIDENCE', 'WORKSPACE_COMMITTED'].includes(event.type)) {
+    return <details><summary>{data.summary}</summary><div style={{ whiteSpace: 'pre-wrap' }}>{(data.changed_files || []).map(path => `• ${path}`).join('\n') || 'ไม่มีไฟล์เปลี่ยน'}</div></details>;
+  }
+  return getEventDescription(event);
 }
 
 export default function ActivityTimeline({ events = [] }) {
@@ -65,7 +86,7 @@ export default function ActivityTimeline({ events = [] }) {
                 </span>
               )}
               <span className="timeline-desc">
-                {getEventDescription(ev)}
+                <EventDetails event={ev} />
               </span>
             </div>
           );
@@ -75,4 +96,3 @@ export default function ActivityTimeline({ events = [] }) {
     </div>
   );
 }
-

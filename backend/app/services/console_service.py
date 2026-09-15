@@ -221,7 +221,7 @@ class ConsoleService:
     
     def get_recent_context(self, project_id: str, count: int = 20, max_char_limit: int = 12000) -> str:
         history = self._histories.get(project_id, [])
-        if not history and self.store:
+        if self.store:
             try:
                 db_msgs = self.store.get_console_messages(project_id, limit=count)
                 history = [

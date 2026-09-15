@@ -2710,3 +2710,34 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* Persistent runtime and task feedback */
+.runtime-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.runtime-banner strong { color: var(--text-primary); }
+.runtime-banner button { margin-left: auto; }
+.pipeline-current-work {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  max-height: 130px;
+  overflow: auto;
+}
+@media (max-width: 700px) {
+  .stepper-track { flex-wrap: wrap; gap: 12px; }
+  .stepper-connector { display: none; }
+  .runtime-banner { padding: 10px 12px; }
+}

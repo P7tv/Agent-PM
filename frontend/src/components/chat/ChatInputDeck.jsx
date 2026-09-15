@@ -1,20 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Paperclip, Send, Zap, MessageSquare } from 'lucide-react';
+import { useToast } from '../Toast';
 import { MentionSuggestPopup } from './MentionSuggestPopup';
 
 export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
+  const toast = useToast();
+  const sendingRef = useRef(false);
   const [text, setText] = useState('');
   const [isDirectiveMode, setIsDirectiveMode] = useState(false);
   const [mentionPos, setMentionPos] = useState(null);
   const textareaRef = useRef(null);
 
   const handleKeyDown = (e) => {
+    if (e.nativeEvent.isComposing) return;
     // Ctrl+Enter or Cmd+Enter: Force run as Directive
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       if (text.trim() && !isSending) {
-        onSendMessage(text, true);
-        setText('');
+        handleSend(true);
       }
       return;
     }
@@ -22,8 +25,7 @@ export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (text.trim() && !isSending) {
-        onSendMessage(text, isDirectiveMode);
-        setText('');
+        handleSend(isDirectiveMode);
       }
     }
   };
@@ -61,9 +63,7 @@ export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
   const handleQuickChip = (chip) => {
     if (chip === 'DIRECTIVE') {
       setIsDirectiveMode(true);
-      if (!text.startsWith('@Team')) {
-        setText('@Team ' + text.replace(/^@\w+\s*/, ''));
-      }
+      setText(text.replace(/^@(team|all)\s*/i, ''));
     } else {
       insertMention(chip);
     }
@@ -72,11 +72,18 @@ export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
     }
   };
 
-  const handleSend = (forceDirective = false) => {
-    if (!text.trim() || isSending) return;
-    const asDirective = forceDirective || isDirectiveMode;
-    onSendMessage(text, asDirective);
-    setText('');
+  const handleSend = async (forceDirective = false) => {
+    if (!text.trim() || isSending || sendingRef.current) return;
+    sendingRef.current = true;
+    try {
+      await onSendMessage(text, forceDirective || isDirectiveMode);
+      setText('');
+      setMentionPos(null);
+    } catch (error) {
+      toast.error(error.message || 'ส่งไม่สำเร็จ ข้อความยังอยู่ ลองอีกครั้งได้');
+    } finally {
+      sendingRef.current = false;
+    }
   };
 
   return (
@@ -131,7 +138,7 @@ export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
         {/* Mode Toggle Button */}
         <button
           type="button"
-          onClick={() => setIsDirectiveMode(!isDirectiveMode)}
+          onClick={() => { setIsDirectiveMode(!isDirectiveMode); setText(text.replace(/^@(team|all)\s*/i, '')); }}
           style={{
             fontSize: '11px',
             padding: '3px 9px',
@@ -152,6 +159,9 @@ export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
         </button>
       </div>
 
+      <p style={{ margin: '4px 0 10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+        {isDirectiveMode ? 'ทีมจะวางแผน → ลงมือแก้ไฟล์ → ทดสอบ → สรุปผล (Gate Mode จะรอให้คุณอนุมัติแผน)' : 'โหมดปรึกษา: รับคำแนะนำและข้อเสนอโค้ด เลือก “สั่งงานทีม” เมื่อต้องการเริ่มสร้างจริง'}
+      </p>
       <div style={{
         display: 'flex',
         gap: '8px',
@@ -178,7 +188,7 @@ export function ChatInputDeck({ onSendMessage, isSending, onAttachFile }) {
           placeholder={
             isDirectiveMode
               ? "⚡ สั่งงานให้ทีมเริ่มทำทันที เช่น 'เริ่มลงมือเลย', 'สร้างระบบ POS API'..."
-              : "พิมพ์สั่ง Tech Lead หรือกด @ เพื่อคุยกับ Agent (หรือกด ⚡ เพื่อสั่งงานทั้งทีม)..."
+              : "ถามหรือปรึกษา Tech Lead… หากต้องการให้ลงมือสร้าง เลือก สั่งงานทีม"
           }
           disabled={isSending}
           style={{

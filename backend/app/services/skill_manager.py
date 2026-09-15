@@ -380,6 +380,10 @@ class SkillManager:
             if project_context.get("has_docker"):
                 prompt_parts.append("• Docker: Detected (support containerized commands)")
 
+            if project_context.get("project_memories"):
+                prompt_parts.append("\nPROJECT MEMORY — saved decisions and constraints:")
+                prompt_parts.append(str(project_context["project_memories"]))
+
             # 6. Team Shared Blackboard (Sprint-Level Blueprint & Contracts)
             if project_context.get("tech_lead_notes"):
                 prompt_parts.append("\n🧭 TECH LEAD DIRECTIVE & CONSTRAINTS:")

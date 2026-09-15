@@ -46,9 +46,9 @@ export function ChatMessageItem({ msg, onApply }) {
         <span style={{ fontSize: '13px', fontWeight: 600, color: isUser ? 'var(--text-primary)' : meta.color }}>
           {isUser ? 'You' : meta.label}
         </span>
-        {msg.created_at && (
+        {(msg.timestamp || msg.created_at) && (
           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-            {new Date(msg.created_at).toLocaleTimeString()}
+            {new Date(msg.timestamp ? msg.timestamp * 1000 : msg.created_at).toLocaleTimeString()}
           </span>
         )}
         {msg.active_skills && msg.active_skills.length > 0 && (

@@ -23,6 +23,15 @@ class SprintQueue:
     def cancel_item(self, queue_id: str) -> bool:
         return self.store.cancel_queue_item(queue_id)
 
+    def resume_pending(self) -> int:
+        """Restart drain workers for directives that survived a server restart."""
+        resumed = 0
+        for project in self.store.list_projects():
+            if self.store.get_queue(project.project_id):
+                self._ensure_worker(project.project_id)
+                resumed += 1
+        return resumed
+
     def _ensure_worker(self, project_id: str):
         existing = self._workers.get(project_id)
         if existing is None or existing.done():
@@ -34,6 +43,8 @@ class SprintQueue:
             if not queue:
                 break
             item = queue[0]
+            final_status = "FAILED"
+            error = None
             self.store.update_queue_item(item.queue_id, "RUNNING")
             if self.broadcast_fn:
                 await self.broadcast_fn("QUEUE_ITEM_STARTED", {"project_id": project_id, "queue_id": item.queue_id, "directive": item.directive})
@@ -50,8 +61,15 @@ class SprintQueue:
                     self.store.update_queue_item(item.queue_id, "CANCELLED")
                 else:
                     self.store.update_queue_item(item.queue_id, "FAILED")
-            except Exception:
+            except Exception as exc:
+                final_status = "FAILED"
+                error = str(exc)
                 self.store.update_queue_item(item.queue_id, "FAILED")
             if self.broadcast_fn:
-                await self.broadcast_fn("QUEUE_ITEM_FINISHED", {"project_id": project_id, "queue_id": item.queue_id})
+                await self.broadcast_fn("QUEUE_ITEM_FINISHED", {
+                    "project_id": project_id,
+                    "queue_id": item.queue_id,
+                    "status": final_status,
+                    "error": error,
+                })
                 await self.broadcast_fn("QUEUE_UPDATED", {"project_id": project_id})

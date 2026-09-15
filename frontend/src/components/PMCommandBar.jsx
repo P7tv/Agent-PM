@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useToast } from './Toast';
 import { Send, TerminalSquare, Sparkles, ChevronDown, ListTodo, BookMarked } from 'lucide-react';
 
 const DIRECTIVE_TEMPLATES = [
@@ -22,6 +23,7 @@ export default function PMCommandBar({
   onOpenJournal,
   sprintCost = { tokens: 0, costUSD: '0.00' }
 }) {
+  const toast = useToast();
   const [directive, setDirective] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -30,9 +32,14 @@ export default function PMCommandBar({
     e.preventDefault();
     if (!directive.trim() || !activeProjectId) return;
     setIsSubmitting(true);
-    await onDispatchDirective(activeProjectId, directive);
-    setDirective('');
-    setIsSubmitting(false);
+    try {
+      await onDispatchDirective(activeProjectId, directive);
+      setDirective('');
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSelectTemplate = (templateText) => {
@@ -45,7 +52,7 @@ export default function PMCommandBar({
       <form className="pm-command-bar" onSubmit={handleSubmit}>
         <div className="pm-badge">
           <TerminalSquare size={14} />
-          <span>DIRECTIVE</span>
+          <span>สั่งสร้างงาน</span>
         </div>
 
         <select
@@ -64,7 +71,7 @@ export default function PMCommandBar({
           <input
             type="text"
             className="pm-input"
-            placeholder="Enter high-level requirement... (e.g., 'Implement user authentication with JWT')"
+            placeholder="อยากสร้างอะไร • ใครใช้ • ต้องทำอะไรได้ • หน้าตาแบบไหน"
             value={directive}
             onChange={(e) => setDirective(e.target.value)}
             disabled={isSubmitting || projects.length === 0}
@@ -82,27 +89,25 @@ export default function PMCommandBar({
         </div>
 
         {/* Quick Backlog & Journal Access */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <div className="pm-quick-actions">
           <button
             type="button"
-            className="template-toggle-btn"
+            className="pm-quick-btn"
             onClick={() => onOpenBacklog && onOpenBacklog(activeProjectId)}
             disabled={!activeProjectId}
             title="Open Product Backlog & Story Board"
-            style={{ height: '32px', padding: '0 8px' }}
           >
-            <ListTodo size={13} color="var(--primary)" />
+            <ListTodo size={14} color="var(--primary)" />
             <span>Backlog</span>
           </button>
           <button
             type="button"
-            className="template-toggle-btn"
+            className="pm-quick-btn"
             onClick={() => onOpenJournal && onOpenJournal(activeProjectId)}
             disabled={!activeProjectId}
             title="Open Agent Memory & Project Journal"
-            style={{ height: '32px', padding: '0 8px' }}
           >
-            <BookMarked size={13} color="#8b5cf6" />
+            <BookMarked size={14} color="#8b5cf6" />
             <span>Journal</span>
           </button>
         </div>

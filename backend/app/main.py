@@ -1,12 +1,20 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from app.api.routes import router
+from app.api.routes import router, sprint_queue
 from app.api.websocket_hub import hub
 
-app = FastAPI(title="Virtual AI Office PM Dashboard")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Resume durable queued directives whenever the API process starts."""
+    sprint_queue.resume_pending()
+    yield
+
+
+app = FastAPI(title="Virtual AI Office PM Dashboard", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

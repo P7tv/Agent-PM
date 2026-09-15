@@ -202,8 +202,17 @@ class StateStore:
                 )
             """)
             # Cleanup orphaned running tasks or agent states from abrupt server shutdowns
+            now = time.time()
             conn.execute("UPDATE directive_queue SET status = 'CANCELLED' WHERE status = 'RUNNING'")
             conn.execute("UPDATE agent_states SET status = 'IDLE' WHERE status IN ('WORKING', 'THINKING', 'TESTING', 'REVIEWING')")
+            conn.execute(
+                """UPDATE sprints SET status = 'FAILED', completed_at = ?,
+                   release_summary = 'Backend restarted before this sprint completed.'
+                   WHERE status = 'RUNNING'""",
+                (now,),
+            )
+            conn.execute("UPDATE tasks SET status = 'FAILED', updated_at = ? WHERE status IN ('IN_PROGRESS', 'TESTING', 'REVIEW')", (now,))
+            conn.execute("UPDATE approvals SET status = 'REJECTED' WHERE status = 'PENDING'")
             conn.commit()
 
     def create_project(self, project_id: str, name: str, workspace_path: str, auto_pilot: bool = False, metadata: Optional[Dict[str, Any]] = None) -> Project:
@@ -697,12 +706,12 @@ class StateStore:
         with self._get_conn() as conn:
             cur = conn.execute(
                 """SELECT message_id, project_id, sender, content, msg_type, role, code_proposals_json, qa_results_json, attachments_json, active_skills_json, timestamp
-                   FROM console_messages WHERE project_id = ? ORDER BY timestamp ASC""",
-                (project_id,)
+                   FROM console_messages WHERE project_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?""",
+                (project_id, max(0, limit))
             )
             rows = cur.fetchall()
             results = []
-            for r in rows[-limit:]:
+            for r in reversed(rows):
                 results.append({
                     "message_id": r[0],
                     "project_id": r[1],

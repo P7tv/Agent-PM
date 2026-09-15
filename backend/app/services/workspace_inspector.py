@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 from typing import Tuple, Dict, Any, List
 
 DANGEROUS_PATHS = {
@@ -31,7 +32,7 @@ class WorkspaceInspector:
         if not path_str or not isinstance(path_str, str):
             return False, "Workspace path cannot be empty.", {}
 
-        resolved_path = os.path.abspath(os.path.expanduser(path_str.strip()))
+        resolved_path = os.path.realpath(os.path.expanduser(path_str.strip()))
 
         # 1. Existence check
         if not os.path.exists(resolved_path):
@@ -51,16 +52,20 @@ class WorkspaceInspector:
             os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)").lower(),
         }
 
+        temporary_roots = {os.path.realpath(tempfile.gettempdir()), os.path.realpath('/tmp')}
+        is_temp_child = any(resolved_path == root or resolved_path.startswith(root + os.sep)
+                            for root in temporary_roots)
+
         if (
             is_root
             or resolved_path in DANGEROUS_PATHS
-            or any(resolved_path.startswith(dp + "/") or resolved_path.startswith(dp + "\\") for dp in ["/System", "/private", "/dev"])
+            or (not is_temp_child and any(resolved_path.startswith(dp + "/") or resolved_path.startswith(dp + "\\") for dp in ["/System", "/private", "/dev"]))
             or resolved_path.lower() in win_system_dirs
         ):
             return False, f"Protected system directory cannot be used as a workspace: '{resolved_path}'", {}
 
         # 4. User home root guardrail (avoid accidental recursive scans of whole home dir)
-        if resolved_path == self.home_dir:
+        if resolved_path == os.path.realpath(self.home_dir):
             return False, "Cannot select entire user home folder as workspace. Please select a specific project directory.", {}
 
         # 5. Permission check
@@ -68,7 +73,7 @@ class WorkspaceInspector:
             return False, f"Directory does not have read/write permissions: '{resolved_path}'", {}
 
         # 6. Deep inspection of workspace files and stack
-        meta = self._inspect_codebase(resolved_path)
+        meta = self._inspect_codebase(os.path.abspath(os.path.expanduser(path_str.strip())))
         return True, "Workspace validated successfully", meta
 
     def _inspect_codebase(self, path: str) -> Dict[str, Any]:

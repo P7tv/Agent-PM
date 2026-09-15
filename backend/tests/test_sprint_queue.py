@@ -55,6 +55,25 @@ async def test_sprint_queue_drains_sequentially():
         assert executed == ["First directive", "Second directive"]
         assert len(store.get_queue("pq")) == 0
 
+
+@pytest.mark.asyncio
+async def test_resume_pending_restarts_workers_after_boot():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = StateStore(os.path.join(tmpdir, "state.db"))
+        store.create_project("resume", "Resume", tmpdir, True)
+        store.enqueue_directive("resume", "Persisted directive")
+
+        class StubOrchestrator:
+            async def execute_pm_directive(self, project_id, directive, event_callback=None):
+                assert project_id == "resume"
+                assert directive == "Persisted directive"
+                return {"status": "COMPLETED"}
+
+        queue = SprintQueue(store=store, orchestrator=StubOrchestrator())
+        assert queue.resume_pending() == 1
+        await queue._workers["resume"]
+        assert store.get_queue("resume") == []
+
 def test_sprint_queue_api_endpoints():
     from fastapi.testclient import TestClient
     from app.main import app
@@ -82,4 +101,3 @@ def test_sprint_queue_api_endpoints():
     
     # Clean up project
     client.delete("/api/projects/test-q-api")
-
