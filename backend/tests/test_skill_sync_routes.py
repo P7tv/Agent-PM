@@ -55,7 +55,6 @@ def test_assign_agent_skill_route():
     assert proj_res.status_code == 200
     proj_id = proj_res.json()["project_id"]
     
-    # 2. Assign 'security-auditor' or 'test-driven-development' to TechLead
     res = client.post(f"/api/projects/{proj_id}/agents/TechLead/assign-skill", json={
         "skill_name": "security-auditor"
     })
@@ -64,3 +63,15 @@ def test_assign_agent_skill_route():
     assert data["status"] == "SUCCESS"
     assert data["role"] == "TechLead"
     assert data["skill_name"] == "security-auditor"
+    assert "security-auditor" in data.get("equipped_skills", [])
+    assert data.get("skill_mode") == "MANUAL"
+
+    # Verify GET /api/projects/{proj_id}/skills returns equipped_skills
+    skills_res = client.get(f"/api/projects/{proj_id}/skills")
+    assert skills_res.status_code == 200
+    all_ag_skills = skills_res.json()
+    tl_skill = next((a for a in all_ag_skills if a["role"] == "TechLead"), None)
+    assert tl_skill is not None
+    assert "security-auditor" in tl_skill["equipped_skills"]
+    assert tl_skill["skill_mode"] == "MANUAL"
+

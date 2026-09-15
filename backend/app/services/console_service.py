@@ -20,6 +20,7 @@ class ConsoleMessage:
         qa_results: Optional[Dict[str, Any]] = None,
         attachments: Optional[List[Dict[str, str]]] = None,
         project_id: Optional[str] = None,
+        active_skills: Optional[List[str]] = None,
     ):
         self.message_id = str(uuid.uuid4())[:8]
         self.project_id = project_id
@@ -30,6 +31,7 @@ class ConsoleMessage:
         self.code_proposals = code_proposals or []
         self.qa_results = qa_results
         self.attachments = attachments or []
+        self.active_skills = active_skills or []
         self.timestamp = time.time()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -49,6 +51,8 @@ class ConsoleMessage:
             d["qa_results"] = self.qa_results
         if self.attachments:
             d["attachments"] = self.attachments
+        if self.active_skills:
+            d["active_skills"] = self.active_skills
         return d
 
 
@@ -95,6 +99,13 @@ def parse_code_proposals(text: str) -> List[Dict[str, str]]:
     return proposals
 
 
+def is_actionable_directive(message: str) -> bool:
+    """DEPRECATED: Auto-detection removed to prevent false positives.
+    Directives must now be explicitly triggered via Ctrl+Enter (is_directive=True).
+    """
+    return False
+
+
 def parse_target_role(message: str) -> tuple:
     """
     Parse @Role mention from user message.
@@ -128,10 +139,11 @@ def parse_target_role(message: str) -> tuple:
 
 
 class ConsoleService:
-    """Manages conversation history per project."""
+    """Manages conversation history per project with optional SQLite persistence."""
     
-    def __init__(self):
+    def __init__(self, store: Optional[Any] = None):
         self._histories: Dict[str, List[ConsoleMessage]] = {}
+        self.store = store
     
     def add_message(
         self,
@@ -143,6 +155,7 @@ class ConsoleService:
         code_proposals: Optional[List[Dict[str, str]]] = None,
         qa_results: Optional[Dict[str, Any]] = None,
         attachments: Optional[List[Dict[str, str]]] = None,
+        active_skills: Optional[List[str]] = None,
     ) -> ConsoleMessage:
         """Add a message to the project's console history."""
         msg = ConsoleMessage(
@@ -153,13 +166,33 @@ class ConsoleService:
             code_proposals=code_proposals,
             qa_results=qa_results,
             attachments=attachments,
-            project_id=project_id
+            project_id=project_id,
+            active_skills=active_skills
         )
         if project_id not in self._histories:
             self._histories[project_id] = []
         self._histories[project_id].append(msg)
         
-        # Keep last 200 messages per project
+        # Persist to SQLite if StateStore is available
+        if self.store and project_id:
+            try:
+                self.store.add_console_message(
+                    project_id=project_id,
+                    sender=sender,
+                    content=content,
+                    msg_type=msg_type,
+                    role=role,
+                    code_proposals=code_proposals,
+                    qa_results=qa_results,
+                    attachments=attachments,
+                    active_skills=active_skills,
+                    message_id=msg.message_id,
+                    timestamp=msg.timestamp
+                )
+            except Exception:
+                pass
+        
+        # Keep last 200 messages per project in memory
         if len(self._histories[project_id]) > 200:
             self._histories[project_id] = self._histories[project_id][-200:]
         
@@ -167,15 +200,48 @@ class ConsoleService:
     
     def get_history(self, project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get the conversation history for a project."""
+        if self.store:
+            try:
+                db_msgs = self.store.get_console_messages(project_id, limit=limit)
+                if db_msgs:
+                    return db_msgs
+            except Exception:
+                pass
         messages = self._histories.get(project_id, [])
         return [m.to_dict() for m in messages[-limit:]]
     
     def clear_history(self, project_id: str):
         """Clear all messages for a project."""
         self._histories.pop(project_id, None)
+        if self.store:
+            try:
+                self.store.clear_console_messages(project_id)
+            except Exception:
+                pass
     
     def get_recent_context(self, project_id: str, count: int = 20, max_char_limit: int = 12000) -> str:
         history = self._histories.get(project_id, [])
+        if not history and self.store:
+            try:
+                db_msgs = self.store.get_console_messages(project_id, limit=count)
+                history = [
+                    ConsoleMessage(
+                        sender=m["sender"],
+                        content=m["content"],
+                        msg_type=m.get("msg_type", "user_chat"),
+                        role=m.get("role"),
+                        code_proposals=m.get("code_proposals"),
+                        qa_results=m.get("qa_results"),
+                        attachments=m.get("attachments"),
+                        project_id=project_id,
+                        active_skills=m.get("active_skills")
+                    )
+                    for m in db_msgs
+                ]
+                self._histories[project_id] = history
+            except Exception:
+                pass
+
         if not history:
             return ""
 

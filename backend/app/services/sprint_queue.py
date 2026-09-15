@@ -12,8 +12,8 @@ class SprintQueue:
         # Track active drain workers per project: { project_id: asyncio.Task }
         self._workers: Dict[str, asyncio.Task] = {}
 
-    def enqueue(self, project_id: str, directive: str) -> QueueItem:
-        item = self.store.enqueue_directive(project_id, directive)
+    def enqueue(self, project_id: str, directive: str, priority: str = "NORMAL") -> QueueItem:
+        item = self.store.enqueue_directive(project_id, directive, priority=priority)
         self._ensure_worker(project_id)
         return item
 
@@ -38,13 +38,20 @@ class SprintQueue:
             if self.broadcast_fn:
                 await self.broadcast_fn("QUEUE_ITEM_STARTED", {"project_id": project_id, "queue_id": item.queue_id, "directive": item.directive})
             try:
-                await self.orchestrator.execute_pm_directive(
+                res = await self.orchestrator.execute_pm_directive(
                     project_id=project_id,
                     directive=item.directive,
                     event_callback=self.broadcast_fn
                 )
-                self.store.update_queue_item(item.queue_id, "COMPLETED")
+                final_status = res.get("status", "COMPLETED") if res else "COMPLETED"
+                if final_status in ["COMPLETED", "SUCCESS"]:
+                    self.store.update_queue_item(item.queue_id, "COMPLETED")
+                elif final_status in ["ABORTED", "REJECTED", "HALTED_QA_FAILURE"]:
+                    self.store.update_queue_item(item.queue_id, "CANCELLED")
+                else:
+                    self.store.update_queue_item(item.queue_id, "FAILED")
             except Exception:
                 self.store.update_queue_item(item.queue_id, "FAILED")
             if self.broadcast_fn:
                 await self.broadcast_fn("QUEUE_ITEM_FINISHED", {"project_id": project_id, "queue_id": item.queue_id})
+                await self.broadcast_fn("QUEUE_UPDATED", {"project_id": project_id})

@@ -34,6 +34,23 @@ class TestParseTargetRole:
         assert role == "TechLead"
         assert msg == "@Unknown do something"
 
+    def test_is_actionable_directive(self):
+        """
+        is_actionable_directive is now DEPRECATED and always returns False.
+        Directive detection is exclusively via is_directive=True (Ctrl+Enter) or @all/@team.
+        This prevents false positives like "@TechLead ทำเสร็จแล้วเหรอ" triggering a full sprint.
+        """
+        from app.services.console_service import is_actionable_directive
+        # All inputs now return False — auto-detection is disabled
+        assert is_actionable_directive("เริ่มลงมือเลย") is False
+        assert is_actionable_directive("สร้างระบบ auth และ login") is False
+        assert is_actionable_directive("implement checkout flow") is False
+        assert is_actionable_directive("start sprint now") is False
+        assert is_actionable_directive("สวัสดีครับ") is False
+        assert is_actionable_directive("โปรเจกต์นี้มีอะไรบ้าง") is False
+        assert is_actionable_directive("hi") is False
+        assert is_actionable_directive("") is False
+
 
 class TestParseCodeProposals:
     def test_parse_file_pattern(self):

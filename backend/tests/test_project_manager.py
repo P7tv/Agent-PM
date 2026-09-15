@@ -26,3 +26,16 @@ def test_project_manager_isolation_and_limit():
             
         # Verify workspace directory resolution
         assert pm.get_project_workspace("proj-a") == dir_a
+
+def test_project_manager_unlimited_default():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = StateStore(os.path.join(tmpdir, "state.db"))
+        pm = ProjectManager(store=store)  # default max_projects=None
+        
+        for i in range(5):
+            d = os.path.join(tmpdir, f"proj_{i}")
+            os.makedirs(d)
+            pm.register_project(f"proj-{i}", f"Project {i}", d)
+            
+        assert len(pm.get_active_projects()) == 5
+

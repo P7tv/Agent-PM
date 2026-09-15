@@ -1,7 +1,9 @@
 import asyncio
+import pytest
 from app.api.routes import runner, store
 from app.services.skill_manager import SkillManager
 
+@pytest.mark.anyio
 async def test_multi_skill():
     print("Testing Multi-Skill System...")
     

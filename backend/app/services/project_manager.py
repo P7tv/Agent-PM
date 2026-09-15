@@ -17,7 +17,7 @@ DEFAULT_ROLES = [
 from app.services.workspace_inspector import WorkspaceInspector
 
 class ProjectManager:
-    def __init__(self, store: StateStore, max_projects: int = 2):
+    def __init__(self, store: StateStore, max_projects: Optional[int] = None):
         self.store = store
         self.max_projects = max_projects
         self.inspector = WorkspaceInspector()
@@ -33,7 +33,7 @@ class ProjectManager:
         existing = self.store.get_project(project_id)
         if not existing:
             current_projects = self.store.list_projects()
-            if len(current_projects) >= self.max_projects:
+            if self.max_projects is not None and len(current_projects) >= self.max_projects:
                 raise ValueError(f"Maximum active projects limit ({self.max_projects}) reached.")
         
         proj_name = name or meta.get("suggested_name") or "Project"

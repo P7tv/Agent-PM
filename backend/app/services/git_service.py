@@ -124,3 +124,171 @@ class GitService:
             }
         except Exception as e:
             return {"success": False, "message": str(e)}
+
+    def get_patch(self, workspace_path: str) -> str:
+        """Returns full git diff/patch text for the workspace."""
+        if not os.path.exists(workspace_path):
+            return ""
+        try:
+            res = subprocess.run(
+                ["git", "diff", "HEAD"],
+                cwd=workspace_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout
+            res_unstaged = subprocess.run(
+                ["git", "diff"],
+                cwd=workspace_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return res_unstaged.stdout if res_unstaged.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    def get_remotes(self, workspace_path: str) -> List[Dict[str, str]]:
+        """Returns list of configured git remotes with their URLs."""
+        if not os.path.exists(workspace_path):
+            return []
+        try:
+            res = subprocess.run(
+                ["git", "remote", "-v"],
+                cwd=workspace_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            remotes = []
+            seen = set()
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        name, url = parts[0], parts[1]
+                        if name not in seen:
+                            seen.add(name)
+                            remotes.append({"name": name, "url": url})
+            return remotes
+        except Exception:
+            return []
+
+    def set_remote(self, workspace_path: str, name: str, url: str) -> Dict[str, Any]:
+        """Adds or updates a git remote URL."""
+        if not os.path.exists(workspace_path):
+            return {"success": False, "message": "Workspace does not exist"}
+        try:
+            res_check = subprocess.run(
+                ["git", "remote", "get-url", name],
+                cwd=workspace_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if res_check.returncode == 0:
+                cmd = ["git", "remote", "set-url", name, url]
+            else:
+                cmd = ["git", "remote", "add", name, url]
+            res = subprocess.run(cmd, cwd=workspace_path, capture_output=True, text=True, timeout=5)
+            return {
+                "success": res.returncode == 0,
+                "name": name,
+                "url": url,
+                "message": res.stdout.strip() if res.returncode == 0 else res.stderr.strip()
+            }
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def git_push(self, workspace_path: str, remote: str = "origin", branch: Optional[str] = None) -> Dict[str, Any]:
+        """Pushes current branch to remote repository."""
+        if not os.path.exists(workspace_path):
+            return {"success": False, "message": "Workspace does not exist"}
+        try:
+            cmd = ["git", "push", remote]
+            if branch:
+                cmd.append(branch)
+            res = subprocess.run(cmd, cwd=workspace_path, capture_output=True, text=True, timeout=30)
+            return {
+                "success": res.returncode == 0,
+                "message": res.stdout.strip() if res.returncode == 0 else res.stderr.strip()
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Git push timed out after 30 seconds."}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def git_pull(self, workspace_path: str, remote: str = "origin", branch: Optional[str] = None) -> Dict[str, Any]:
+        """Pulls latest changes from remote repository."""
+        if not os.path.exists(workspace_path):
+            return {"success": False, "message": "Workspace does not exist"}
+        try:
+            cmd = ["git", "pull", remote]
+            if branch:
+                cmd.append(branch)
+            res = subprocess.run(cmd, cwd=workspace_path, capture_output=True, text=True, timeout=30)
+            return {
+                "success": res.returncode == 0,
+                "message": res.stdout.strip() if res.returncode == 0 else res.stderr.strip()
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Git pull timed out after 30 seconds."}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def list_branches(self, workspace_path: str) -> List[Dict[str, Any]]:
+        """Lists local git branches with current branch indicated."""
+        if not os.path.exists(workspace_path):
+            return []
+        try:
+            res = subprocess.run(
+                ["git", "branch", "--no-color"],
+                cwd=workspace_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            branches = []
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    clean_line = line.strip()
+                    if not clean_line:
+                        continue
+                    is_current = clean_line.startswith("*")
+                    b_name = clean_line.lstrip("*").strip()
+                    branches.append({"name": b_name, "is_current": is_current})
+            return branches
+        except Exception:
+            return []
+
+    def create_branch(self, workspace_path: str, branch_name: str, checkout: bool = True) -> Dict[str, Any]:
+        """Creates a new git branch and optionally checks it out."""
+        if not os.path.exists(workspace_path):
+            return {"success": False, "message": "Workspace does not exist"}
+        try:
+            cmd = ["git", "checkout", "-b", branch_name] if checkout else ["git", "branch", branch_name]
+            res = subprocess.run(cmd, cwd=workspace_path, capture_output=True, text=True, timeout=5)
+            return {
+                "success": res.returncode == 0,
+                "branch": branch_name,
+                "message": res.stdout.strip() if res.returncode == 0 else res.stderr.strip()
+            }
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def switch_branch(self, workspace_path: str, branch_name: str) -> Dict[str, Any]:
+        """Switches to an existing git branch."""
+        if not os.path.exists(workspace_path):
+            return {"success": False, "message": "Workspace does not exist"}
+        try:
+            res = subprocess.run(["git", "checkout", branch_name], cwd=workspace_path, capture_output=True, text=True, timeout=5)
+            return {
+                "success": res.returncode == 0,
+                "branch": branch_name,
+                "message": res.stdout.strip() if res.returncode == 0 else res.stderr.strip()
+            }
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+

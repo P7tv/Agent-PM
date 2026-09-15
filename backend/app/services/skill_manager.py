@@ -188,17 +188,20 @@ class SkillManager:
             instructions=f"# {normalized.replace('-', ' ').title()} Playbook\n\nOperate as a specialist in {normalized}."
         )
 
-    def get_domain_skills_for_role(self, role: str) -> List[SkillInfo]:
+    def get_domain_skills_for_role(self, role: str, project_path: Optional[str] = None) -> List[SkillInfo]:
         normalized = self._normalize_role(role)
         role_to_domains = {
             "frontend-dev": ["frontend", "ui", "design", "qa"],
             "backend-dev": ["backend", "api", "database", "qa"],
             "tech-lead": ["lead", "architecture", "plan"],
             "architect": ["architecture", "system"],
-            "qa-engineer": ["qa", "test", "verification"]
+            "qa-engineer": ["qa", "test", "verification"],
+            "systematic-debugger": ["debug", "fix", "bug", "trace"],
+            "security-auditor": ["security", "audit", "auth"],
+            "devops-engineer": ["devops", "docker", "deploy"]
         }
         
-        all_skills = self.list_available_skills()
+        all_skills = self.list_available_skills(project_path=project_path)
         domains = role_to_domains.get(normalized, ["general", "plan", "debug"])
         
         matched = []
@@ -206,6 +209,95 @@ class SkillManager:
             if any(d in s.name.lower() or d in s.description.lower() for d in domains):
                 matched.append(s)
         return matched[:3]
+
+    def match_skills_for_task(
+        self,
+        role: str,
+        task_prompt: str,
+        project_path: Optional[str] = None,
+        max_skills: int = 2
+    ) -> List[SkillInfo]:
+        """
+        Intelligently matches the most relevant skills for an agent task based on:
+        1. Triggers in SKILL.md frontmatter (weight +4 per match)
+        2. Skill name & title keywords (weight +3 per match)
+        3. Skill description keywords (weight +1.5 per match)
+        4. Role domain affinities (weight +2 base boost)
+        5. Project-local priority boost (weight +2 for 'project' tier)
+        """
+        if not task_prompt:
+            return self.get_domain_skills_for_role(role, project_path=project_path)[:max_skills]
+
+        all_skills = self.list_available_skills(project_path=project_path)
+        if not all_skills:
+            return []
+
+        normalized_role = self._normalize_role(role)
+        role_to_domains = {
+            "frontend-dev": ["frontend", "ui", "design", "css", "layout", "web", "page", "button", "component"],
+            "backend-dev": ["backend", "api", "database", "sql", "route", "query", "server", "endpoint", "crud"],
+            "tech-lead": ["lead", "architecture", "plan", "coordinate", "triage", "review"],
+            "architect": ["architecture", "system", "decompose", "design", "spec", "schema"],
+            "qa-engineer": ["qa", "test", "verification", "tdd", "assert", "regression"],
+            "systematic-debugger": ["debug", "fix", "bug", "trace", "error", "exception", "leak"],
+            "security-auditor": ["security", "audit", "auth", "token", "cve", "owasp", "secret"],
+            "devops-engineer": ["devops", "docker", "deploy", "ci", "cd", "pipeline", "container"]
+        }
+        role_domains = role_to_domains.get(normalized_role, ["general"])
+
+        prompt_lower = task_prompt.lower()
+        prompt_tokens = set(re.findall(r"\b[a-zA-Z0-9_-]{2,}\b", prompt_lower))
+
+        scored_skills = []
+        for s in all_skills:
+            score = 0.0
+
+            # 1. Triggers match (highest signal)
+            triggers = getattr(s, "triggers", []) or []
+            for tr in triggers:
+                tr_clean = tr.strip().lower()
+                if not tr_clean:
+                    continue
+                if " " in tr_clean or "-" in tr_clean:
+                    if tr_clean in prompt_lower or tr_clean.replace("-", " ") in prompt_lower:
+                        score += 5.0
+                elif tr_clean in prompt_tokens or tr_clean in prompt_lower:
+                    score += 4.0
+
+            # 2. Skill Name & Title tokens match
+            name_tokens = set(re.findall(r"\b[a-zA-Z0-9]{2,}\b", (s.name + " " + s.title).lower()))
+            common_name_tokens = prompt_tokens.intersection(name_tokens)
+            score += len(common_name_tokens) * 3.0
+
+            # 3. Description keyword matches
+            if s.description:
+                desc_tokens = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", s.description.lower()))
+                stop_words = {"the", "and", "for", "with", "this", "that", "from", "use", "when", "into"}
+                desc_tokens = desc_tokens - stop_words
+                common_desc = prompt_tokens.intersection(desc_tokens)
+                score += len(common_desc) * 1.5
+
+            # 4. Role domain affinity
+            s_name_desc = (s.name + " " + s.description).lower()
+            if any(d in s_name_desc for d in role_domains):
+                score += 2.0
+
+            # 5. Project-local priority boost
+            if s.tier == "project":
+                score += 2.0
+
+            if score > 0:
+                scored_skills.append((score, s))
+
+        # Sort by score descending
+        scored_skills.sort(key=lambda x: x[0], reverse=True)
+
+        if scored_skills:
+            return [s for _, s in scored_skills[:max_skills]]
+
+        # Fallback to role domain skills if no specific prompt matches
+        return self.get_domain_skills_for_role(role, project_path=project_path)[:max_skills]
+
 
     def synthesize_agent_prompt(
         self,
@@ -257,17 +349,58 @@ class SkillManager:
             prompt_parts.append("🔍 REAL-TIME PROJECT CONTEXT & CONSTRAINTS")
             prompt_parts.append("============================================================")
             
-            if project_context.get("project_purpose"):
-                prompt_parts.append(f"• Project Purpose: {project_context['project_purpose']}")
-            if project_context.get("stack"):
-                prompt_parts.append(f"• Primary Tech Stack: {project_context['stack']}")
-            if project_context.get("test_command"):
-                prompt_parts.append(f"• Automated Test Command: {project_context['test_command']}")
-            if project_context.get("directory_topology"):
-                topo_str = ", ".join(project_context["directory_topology"][:10])
-                prompt_parts.append(f"• Key Directories: {topo_str}")
+            # 1. Project Purpose (support both current metadata and legacy keys)
+            purpose = (
+                project_context.get("purpose_summary")
+                or project_context.get("project_purpose")
+                or project_context.get("summary")
+            )
+            if purpose:
+                prompt_parts.append(f"• Project Purpose: {purpose}")
+
+            # 2. Tech Stack and Frameworks
+            stack = project_context.get("stack_type") or project_context.get("stack")
+            if stack:
+                frameworks = project_context.get("frameworks", [])
+                fw_str = f" ({', '.join(frameworks)})" if frameworks else ""
+                prompt_parts.append(f"• Primary Tech Stack: {stack}{fw_str}")
+
+            # 3. Automated Test Command
+            test_cmd = project_context.get("test_command") or project_context.get("test_runner")
+            if test_cmd:
+                prompt_parts.append(f"• Automated Test Command: {test_cmd}")
+
+            # 4. Key Directories
+            dirs = project_context.get("directory_structure") or project_context.get("directory_topology")
+            if dirs:
+                cleaned_dirs = [d.rstrip("/") for d in dirs if not d.startswith(".")][:10]
+                prompt_parts.append(f"• Key Directories: {', '.join(cleaned_dirs)}")
+
+            # 5. Docker Containerization
             if project_context.get("has_docker"):
                 prompt_parts.append("• Docker: Detected (support containerized commands)")
+
+            # 6. Team Shared Blackboard (Sprint-Level Blueprint & Contracts)
+            if project_context.get("tech_lead_notes"):
+                prompt_parts.append("\n🧭 TECH LEAD DIRECTIVE & CONSTRAINTS:")
+                prompt_parts.append(str(project_context["tech_lead_notes"]).strip())
+
+            if project_context.get("architect_plan"):
+                prompt_parts.append("\n📐 SPRINT ARCHITECTURAL BLUEPRINT & CONTRACTS:")
+                prompt_parts.append(str(project_context["architect_plan"]).strip())
+
+            if project_context.get("backend_specs"):
+                prompt_parts.append("\n🔌 COMPLETED BACKEND API SPECIFICATIONS:")
+                prompt_parts.append(str(project_context["backend_specs"]).strip())
+
+            if project_context.get("design_specs"):
+                prompt_parts.append("\n🎨 COMPLETED DESIGN TOKENS & UI SPECIFICATIONS:")
+                prompt_parts.append(str(project_context["design_specs"]).strip())
+
+            if project_context.get("qa_criteria"):
+                prompt_parts.append("\n🧪 QA VERIFICATION & ACCEPTANCE CRITERIA:")
+                prompt_parts.append(str(project_context["qa_criteria"]).strip())
+
             prompt_parts.append("")
 
         prompt_parts.append("============================================================")

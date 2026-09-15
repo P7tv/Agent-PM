@@ -43,6 +43,8 @@ class TaskItem(BaseModel):
     description: str = ""
     assigned_to: str
     status: TaskStatus = TaskStatus.TODO
+    sprint_id: Optional[str] = None
+    result_output: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -106,7 +108,40 @@ class QueueItem(BaseModel):
     directive: str
     status: str = "QUEUED"  # QUEUED | RUNNING | COMPLETED | CANCELLED
     position: int = 0
+    priority: str = "NORMAL"  # URGENT | HIGH | NORMAL | LOW
     created_at: float = Field(default_factory=time.time)
+
+class BacklogItem(BaseModel):
+    item_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    project_id: str
+    title: str
+    description: str = ""
+    category: str = "feature"  # feature | bug | refactor | doc
+    priority: str = "NORMAL"  # URGENT | HIGH | NORMAL | LOW
+    status: str = "BACKLOG"  # BACKLOG | QUEUED | COMPLETED
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+class ProjectMemory(BaseModel):
+    memory_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    project_id: str
+    category: str = "architecture"  # architecture | rule | convention | decision
+    title: str
+    content: str
+    created_at: float = Field(default_factory=time.time)
+
+class AgentActivityLog(BaseModel):
+    log_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    project_id: str
+    sprint_id: Optional[str] = None
+    role: str
+    action_type: str = "task_execution"  # task_execution | chat_response | whisper
+    tokens_used: int = 0
+    duration_seconds: float = 0.0
+    status: str = "SUCCESS"  # SUCCESS | FAILED | TIMEOUT
+    summary: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+
 
 
 

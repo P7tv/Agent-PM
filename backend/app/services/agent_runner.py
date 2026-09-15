@@ -75,12 +75,13 @@ class AgentRunner:
         base_role_skill = self.skill_manager.get_base_role_skill(role)
         if self.store:
             agent_state = self.store.get_agent_status(project_id, role)
-            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
-                for s_name in agent_state.equipped_skills:
+            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL":
+                skills_to_load = getattr(agent_state, "equipped_skills", []) or ([agent_state.skill_name] if getattr(agent_state, "skill_name", None) else [])
+                for s_name in skills_to_load:
                     try:
                         active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
                     except: pass
-            else:
+            if not active_skills:
                 active_skills = self.skill_manager.match_skills_for_task(
                     role=role,
                     task_prompt=prompt,
@@ -162,7 +163,12 @@ class AgentRunner:
                     capabilities=CapabilitiesConfig()
                 )
                 async with Agent(config) as agent:
-                    response = await agent.chat(prompt)
+                    sdk_prompt = (
+                        f"{prompt}\n\n"
+                        f"If you create or update files, output each file using:\n"
+                        f"```filename: relative/path/to/file.ext\n<code content>\n```\n"
+                    )
+                    response = await agent.chat(sdk_prompt)
                     full_text = []
                     if hasattr(response, "thoughts"):
                         async for thought in response.thoughts:
@@ -178,7 +184,25 @@ class AgentRunner:
                     resp_str = "".join(full_text)
                     if tokens_used == 0:
                         tokens_used = len(resp_str) // 4
-                        
+                    
+                    try:
+                        from app.services.console_service import parse_code_proposals
+                        proposals = parse_code_proposals(resp_str)
+                        for prop in proposals:
+                            fp = prop.get("filepath", "")
+                            cnt = prop.get("content", "")
+                            if fp and cnt and workspace_path and os.path.exists(workspace_path):
+                                full_p = os.path.join(workspace_path, fp) if not os.path.isabs(fp) else fp
+                                real_ws = os.path.realpath(workspace_path)
+                                real_tgt = os.path.realpath(full_p)
+                                if real_tgt.startswith(real_ws):
+                                    os.makedirs(os.path.dirname(real_tgt), exist_ok=True)
+                                    with open(real_tgt, "w", encoding="utf-8") as f:
+                                        f.write(cnt)
+                                    await emit("TOOL_EXECUTION_FINISH", {"tool": "write_file", "result": f"Saved {fp}"})
+                    except Exception:
+                        pass
+
                     await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
                     return {
                         "status": "SUCCESS",
@@ -270,12 +294,13 @@ class AgentRunner:
         base_role_skill = self.skill_manager.get_base_role_skill(role)
         if self.store:
             agent_state = self.store.get_agent_status(project_id, role)
-            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL" and getattr(agent_state, "equipped_skills", []):
-                for s_name in agent_state.equipped_skills:
+            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL":
+                skills_to_load = getattr(agent_state, "equipped_skills", []) or ([agent_state.skill_name] if getattr(agent_state, "skill_name", None) else [])
+                for s_name in skills_to_load:
                     try:
                         active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
                     except: pass
-            else:
+            if not active_skills:
                 active_skills = self.skill_manager.match_skills_for_task(
                     role=role,
                     task_prompt=message,
@@ -319,8 +344,38 @@ class AgentRunner:
         backend_used = "mock"
         tokens_used = 0
 
-        # Try agy CLI first if not in mock mode
-        if not self.use_mock and HAS_AGY_CLI and os.path.exists(AGY_PATH):
+        # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present and not in mock mode)
+        if not self.use_mock and self.has_api_key and HAS_ANTIGRAVITY:
+            try:
+                config = LocalAgentConfig(
+                    system_instructions=system_instruction,
+                    capabilities=CapabilitiesConfig()
+                )
+                async with Agent(config) as agent:
+                    chat_query = (
+                        f"Recent conversation context:\n{conversation_context}\n\n"
+                        f"User message: {message}\n"
+                        f"{attachment_context}\n"
+                        f"If you propose code changes, format them as:\n"
+                        f"**File: relative/path/to/file.ext**\n```language\ncode content\n```\n"
+                        f"Workspace: {workspace_path}"
+                    )
+                    response = await agent.chat(chat_query)
+                    full_text = []
+                    if hasattr(response, "usage_metadata"):
+                        tokens_used = getattr(response.usage_metadata, "total_token_count", 0) or 0
+                    async for token in response:
+                        full_text.append(token)
+                    response_text = "".join(full_text).strip()
+                    if response_text:
+                        backend_used = "sdk"
+                        if tokens_used == 0:
+                            tokens_used = len(response_text) // 4
+            except Exception:
+                pass
+
+        # 2. Try agy CLI if not already answered by SDK
+        if not response_text and not self.use_mock and HAS_AGY_CLI and os.path.exists(AGY_PATH):
             try:
                 cmd_args = [AGY_PATH, "--add-dir", workspace_path, "-p", full_prompt, "--dangerously-skip-permissions", "--effort", "low"]
                 if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):

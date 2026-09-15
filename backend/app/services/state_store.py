@@ -1,8 +1,12 @@
 import sqlite3
 import json
 import time
+import uuid
 from typing import List, Optional, Dict, Any
-from app.models.schemas import Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest, SprintRecord, QueueItem
+from app.models.schemas import (
+    Project, TaskItem, AgentState, TaskStatus, AgentStatus, ApprovalRequest, SprintRecord, QueueItem,
+    BacklogItem, ProjectMemory, AgentActivityLog
+)
 
 from contextlib import contextmanager
 
@@ -49,6 +53,15 @@ class StateStore:
                     updated_at REAL
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN sprint_id TEXT DEFAULT NULL")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN result_output TEXT DEFAULT NULL")
+            except sqlite3.OperationalError:
+                pass
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS agent_states (
                     project_id TEXT,
@@ -116,6 +129,81 @@ class StateStore:
                     created_at REAL NOT NULL
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE directive_queue ADD COLUMN priority TEXT DEFAULT 'NORMAL'")
+            except sqlite3.OperationalError:
+                pass
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS console_messages (
+                    message_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    msg_type TEXT DEFAULT 'user_chat',
+                    role TEXT,
+                    code_proposals_json TEXT DEFAULT '[]',
+                    qa_results_json TEXT DEFAULT NULL,
+                    attachments_json TEXT DEFAULT '[]',
+                    active_skills_json TEXT DEFAULT '[]',
+                    timestamp REAL NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS backlog_items (
+                    item_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    category TEXT DEFAULT 'feature',
+                    priority TEXT DEFAULT 'NORMAL',
+                    status TEXT DEFAULT 'BACKLOG',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_memories (
+                    memory_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    category TEXT DEFAULT 'architecture',
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_activity_logs (
+                    log_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    sprint_id TEXT,
+                    role TEXT NOT NULL,
+                    action_type TEXT DEFAULT 'task_execution',
+                    tokens_used INTEGER DEFAULT 0,
+                    duration_seconds REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'SUCCESS',
+                    summary TEXT,
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_sprint_logs (
+                    log_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    sprint_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    step_label TEXT NOT NULL,
+                    response_text TEXT DEFAULT '',
+                    tokens_used INTEGER DEFAULT 0,
+                    created_at REAL NOT NULL
+                )
+            """)
+            # Cleanup orphaned running tasks or agent states from abrupt server shutdowns
+            conn.execute("UPDATE directive_queue SET status = 'CANCELLED' WHERE status = 'RUNNING'")
+            conn.execute("UPDATE agent_states SET status = 'IDLE' WHERE status IN ('WORKING', 'THINKING', 'TESTING', 'REVIEWING')")
             conn.commit()
 
     def create_project(self, project_id: str, name: str, workspace_path: str, auto_pilot: bool = False, metadata: Optional[Dict[str, Any]] = None) -> Project:
@@ -159,12 +247,12 @@ class StateStore:
             cur = conn.execute("SELECT project_id, name, workspace_path, auto_pilot, created_at FROM projects ORDER BY created_at ASC")
             return [Project(project_id=r[0], name=r[1], workspace_path=r[2], auto_pilot=bool(r[3]), created_at=r[4]) for r in cur.fetchall()]
 
-    def create_task(self, project_id: str, title: str, assigned_to: str, description: str = "") -> TaskItem:
-        task = TaskItem(project_id=project_id, title=title, description=description, assigned_to=assigned_to)
+    def create_task(self, project_id: str, title: str, assigned_to: str, description: str = "", sprint_id: Optional[str] = None) -> TaskItem:
+        task = TaskItem(project_id=project_id, title=title, description=description, assigned_to=assigned_to, sprint_id=sprint_id)
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (task.task_id, task.project_id, task.title, task.description, task.assigned_to, task.status.value, task.created_at, task.updated_at)
+                "INSERT INTO tasks (task_id, project_id, title, description, assigned_to, status, created_at, updated_at, sprint_id, result_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task.task_id, task.project_id, task.title, task.description, task.assigned_to, task.status.value, task.created_at, task.updated_at, task.sprint_id, task.result_output)
             )
             conn.commit()
         return task
@@ -174,14 +262,54 @@ class StateStore:
         with self._get_conn() as conn:
             conn.execute("UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?", (status, now, task_id))
             conn.commit()
-            cur = conn.execute("SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at FROM tasks WHERE task_id = ?", (task_id,))
+            cur = conn.execute("SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at, sprint_id, result_output FROM tasks WHERE task_id = ?", (task_id,))
             r = cur.fetchone()
-            return TaskItem(task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4], status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7])
+            return TaskItem(
+                task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4],
+                status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7], sprint_id=r[8], result_output=r[9]
+            )
+
+    def update_task_result(self, task_id: str, result_output: str, status: Optional[str] = None) -> Optional[TaskItem]:
+        now = time.time()
+        with self._get_conn() as conn:
+            if status:
+                conn.execute("UPDATE tasks SET result_output = ?, status = ?, updated_at = ? WHERE task_id = ?", (result_output, status, now, task_id))
+            else:
+                conn.execute("UPDATE tasks SET result_output = ?, updated_at = ? WHERE task_id = ?", (result_output, now, task_id))
+            conn.commit()
+            cur = conn.execute("SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at, sprint_id, result_output FROM tasks WHERE task_id = ?", (task_id,))
+            r = cur.fetchone()
+            if r:
+                return TaskItem(
+                    task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4],
+                    status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7], sprint_id=r[8], result_output=r[9]
+                )
+        return None
 
     def get_tasks(self, project_id: str) -> List[TaskItem]:
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at FROM tasks WHERE project_id = ? ORDER BY created_at ASC", (project_id,))
-            return [TaskItem(task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4], status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7]) for r in cur.fetchall()]
+            cur = conn.execute("SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at, sprint_id, result_output FROM tasks WHERE project_id = ? ORDER BY created_at ASC", (project_id,))
+            return [
+                TaskItem(
+                    task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4],
+                    status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7], sprint_id=r[8], result_output=r[9]
+                )
+                for r in cur.fetchall()
+            ]
+
+    def get_sprint_tasks(self, sprint_id: str) -> List[TaskItem]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "SELECT task_id, project_id, title, description, assigned_to, status, created_at, updated_at, sprint_id, result_output FROM tasks WHERE sprint_id = ? ORDER BY created_at ASC",
+                (sprint_id,)
+            )
+            return [
+                TaskItem(
+                    task_id=r[0], project_id=r[1], title=r[2], description=r[3], assigned_to=r[4],
+                    status=TaskStatus(r[5]), created_at=r[6], updated_at=r[7], sprint_id=r[8], result_output=r[9]
+                )
+                for r in cur.fetchall()
+            ]
 
     def set_agent_status(
         self,
@@ -444,15 +572,15 @@ class StateStore:
                 )
         return None
 
-    def enqueue_directive(self, project_id: str, directive: str) -> QueueItem:
+    def enqueue_directive(self, project_id: str, directive: str, priority: str = "NORMAL") -> QueueItem:
         with self._get_conn() as conn:
             cur = conn.execute("SELECT MAX(position) FROM directive_queue WHERE project_id = ?", (project_id,))
             row = cur.fetchone()
             max_pos = row[0] if row and row[0] is not None else -1
-            item = QueueItem(project_id=project_id, directive=directive, position=max_pos + 1)
+            item = QueueItem(project_id=project_id, directive=directive, position=max_pos + 1, priority=priority)
             conn.execute(
-                "INSERT INTO directive_queue (queue_id, project_id, directive, status, position, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (item.queue_id, item.project_id, item.directive, item.status, item.position, item.created_at)
+                "INSERT INTO directive_queue (queue_id, project_id, directive, status, position, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (item.queue_id, item.project_id, item.directive, item.status, item.position, item.priority, item.created_at)
             )
             conn.commit()
             return item
@@ -460,11 +588,11 @@ class StateStore:
     def get_queue(self, project_id: str) -> List[QueueItem]:
         with self._get_conn() as conn:
             cur = conn.execute(
-                "SELECT queue_id, project_id, directive, status, position, created_at FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' ORDER BY position ASC",
+                "SELECT queue_id, project_id, directive, status, position, created_at, priority FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' ORDER BY position ASC",
                 (project_id,)
             )
             return [
-                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5])
+                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5], priority=r[6] or "NORMAL")
                 for r in cur.fetchall()
             ]
 
@@ -482,11 +610,339 @@ class StateStore:
     def get_all_queue_items(self) -> List[QueueItem]:
         with self._get_conn() as conn:
             cur = conn.execute(
-                "SELECT queue_id, project_id, directive, status, position, created_at FROM directive_queue WHERE status IN ('QUEUED', 'RUNNING') ORDER BY created_at ASC"
+                "SELECT queue_id, project_id, directive, status, position, created_at, priority FROM directive_queue WHERE status IN ('QUEUED', 'RUNNING') ORDER BY created_at ASC"
             )
             return [
-                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5])
+                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5], priority=r[6] or "NORMAL")
                 for r in cur.fetchall()
             ]
 
+    def set_queue_priority(self, queue_id: str, priority: str) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute("UPDATE directive_queue SET priority = ? WHERE queue_id = ?", (priority, queue_id))
+            conn.commit()
+            return cur.rowcount > 0
 
+    def reorder_queue_item(self, queue_id: str, direction: str) -> bool:
+        """Move item 'up' or 'down' relative to its peers."""
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT queue_id, project_id, position FROM directive_queue WHERE queue_id = ?", (queue_id,))
+            target = cur.fetchone()
+            if not target:
+                return False
+            _, project_id, current_pos = target
+            if direction == "up":
+                cur = conn.execute(
+                    "SELECT queue_id, position FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' AND position < ? ORDER BY position DESC LIMIT 1",
+                    (project_id, current_pos)
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT queue_id, position FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' AND position > ? ORDER BY position ASC LIMIT 1",
+                    (project_id, current_pos)
+                )
+            other = cur.fetchone()
+            if not other:
+                return False
+            other_id, other_pos = other
+            conn.execute("UPDATE directive_queue SET position = ? WHERE queue_id = ?", (other_pos, queue_id))
+            conn.execute("UPDATE directive_queue SET position = ? WHERE queue_id = ?", (current_pos, other_id))
+            conn.commit()
+            return True
+
+    # ── Console Messages Persistence ────────────────────────────
+    def add_console_message(
+        self,
+        project_id: str,
+        sender: str,
+        content: str,
+        msg_type: str = "user_chat",
+        role: Optional[str] = None,
+        code_proposals: Optional[List[Dict[str, str]]] = None,
+        qa_results: Optional[Dict[str, Any]] = None,
+        attachments: Optional[List[Dict[str, str]]] = None,
+        active_skills: Optional[List[str]] = None,
+        message_id: Optional[str] = None,
+        timestamp: Optional[float] = None
+    ) -> Dict[str, Any]:
+        msg_id = message_id or str(uuid.uuid4())[:8]
+        ts = timestamp or time.time()
+        c_prop = json.dumps(code_proposals) if code_proposals else "[]"
+        qa_res = json.dumps(qa_results) if qa_results else None
+        att = json.dumps(attachments) if attachments else "[]"
+        skills = json.dumps(active_skills) if active_skills else "[]"
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO console_messages 
+                   (message_id, project_id, sender, content, msg_type, role, code_proposals_json, qa_results_json, attachments_json, active_skills_json, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, project_id, sender, content, msg_type, role or sender, c_prop, qa_res, att, skills, ts)
+            )
+            conn.commit()
+        return {
+            "message_id": msg_id,
+            "project_id": project_id,
+            "sender": sender,
+            "content": content,
+            "msg_type": msg_type,
+            "role": role or sender,
+            "code_proposals": code_proposals or [],
+            "qa_results": qa_results,
+            "attachments": attachments or [],
+            "active_skills": active_skills or [],
+            "timestamp": ts
+        }
+
+    def get_console_messages(self, project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """SELECT message_id, project_id, sender, content, msg_type, role, code_proposals_json, qa_results_json, attachments_json, active_skills_json, timestamp
+                   FROM console_messages WHERE project_id = ? ORDER BY timestamp ASC""",
+                (project_id,)
+            )
+            rows = cur.fetchall()
+            results = []
+            for r in rows[-limit:]:
+                results.append({
+                    "message_id": r[0],
+                    "project_id": r[1],
+                    "sender": r[2],
+                    "content": r[3],
+                    "msg_type": r[4],
+                    "role": r[5],
+                    "code_proposals": json.loads(r[6]) if r[6] else [],
+                    "qa_results": json.loads(r[7]) if r[7] else None,
+                    "attachments": json.loads(r[8]) if r[8] else [],
+                    "active_skills": json.loads(r[9]) if r[9] else [],
+                    "timestamp": r[10]
+                })
+            return results
+
+    def clear_console_messages(self, project_id: str):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM console_messages WHERE project_id = ?", (project_id,))
+            conn.commit()
+
+    # ── Backlog Management ─────────────────────────────────────
+    def create_backlog_item(
+        self,
+        project_id: str,
+        title: str,
+        description: str = "",
+        category: str = "feature",
+        priority: str = "NORMAL"
+    ) -> BacklogItem:
+        item = BacklogItem(
+            project_id=project_id,
+            title=title,
+            description=description,
+            category=category,
+            priority=priority
+        )
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO backlog_items 
+                   (item_id, project_id, title, description, category, priority, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (item.item_id, item.project_id, item.title, item.description, item.category, item.priority, item.status, item.created_at, item.updated_at)
+            )
+            conn.commit()
+        return item
+
+    def get_backlog_items(self, project_id: str) -> List[BacklogItem]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """SELECT item_id, project_id, title, description, category, priority, status, created_at, updated_at
+                   FROM backlog_items WHERE project_id = ? ORDER BY created_at DESC""",
+                (project_id,)
+            )
+            return [
+                BacklogItem(
+                    item_id=r[0], project_id=r[1], title=r[2], description=r[3],
+                    category=r[4], priority=r[5], status=r[6], created_at=r[7], updated_at=r[8]
+                )
+                for r in cur.fetchall()
+            ]
+
+    def update_backlog_item(
+        self,
+        item_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        category: Optional[str] = None,
+        priority: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> Optional[BacklogItem]:
+        now = time.time()
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT item_id, project_id, title, description, category, priority, status, created_at, updated_at FROM backlog_items WHERE item_id = ?", (item_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            new_title = title if title is not None else row[2]
+            new_desc = description if description is not None else row[3]
+            new_cat = category if category is not None else row[4]
+            new_pri = priority if priority is not None else row[5]
+            new_stat = status if status is not None else row[6]
+            conn.execute(
+                "UPDATE backlog_items SET title = ?, description = ?, category = ?, priority = ?, status = ?, updated_at = ? WHERE item_id = ?",
+                (new_title, new_desc, new_cat, new_pri, new_stat, now, item_id)
+            )
+            conn.commit()
+            return BacklogItem(
+                item_id=row[0], project_id=row[1], title=new_title, description=new_desc,
+                category=new_cat, priority=new_pri, status=new_stat, created_at=row[7], updated_at=now
+            )
+
+    def delete_backlog_item(self, item_id: str) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM backlog_items WHERE item_id = ?", (item_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    # ── Project Memories (Architectural Rules & Context) ────────
+    def add_project_memory(self, project_id: str, title: str, content: str, category: str = "architecture") -> ProjectMemory:
+        memory = ProjectMemory(project_id=project_id, title=title, content=content, category=category)
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO project_memories (memory_id, project_id, category, title, content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (memory.memory_id, memory.project_id, memory.category, memory.title, memory.content, memory.created_at)
+            )
+            conn.commit()
+        return memory
+
+    def get_project_memories(self, project_id: str) -> List[ProjectMemory]:
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "SELECT memory_id, project_id, category, title, content, created_at FROM project_memories WHERE project_id = ? ORDER BY created_at DESC",
+                (project_id,)
+            )
+            return [
+                ProjectMemory(memory_id=r[0], project_id=r[1], category=r[2], title=r[3], content=r[4], created_at=r[5])
+                for r in cur.fetchall()
+            ]
+
+    def delete_project_memory(self, memory_id: str) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM project_memories WHERE memory_id = ?", (memory_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    # ── Agent Activity Logs & Performance Analytics ────────────
+    def record_agent_activity(
+        self,
+        project_id: str,
+        role: str,
+        action_type: str = "task_execution",
+        sprint_id: Optional[str] = None,
+        tokens_used: int = 0,
+        duration_seconds: float = 0.0,
+        status: str = "SUCCESS",
+        summary: Optional[str] = None
+    ) -> AgentActivityLog:
+        log = AgentActivityLog(
+            project_id=project_id,
+            role=role,
+            action_type=action_type,
+            sprint_id=sprint_id,
+            tokens_used=tokens_used,
+            duration_seconds=duration_seconds,
+            status=status,
+            summary=summary
+        )
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO agent_activity_logs 
+                   (log_id, project_id, sprint_id, role, action_type, tokens_used, duration_seconds, status, summary, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (log.log_id, log.project_id, log.sprint_id, log.role, log.action_type, log.tokens_used, log.duration_seconds, log.status, log.summary, log.created_at)
+            )
+            conn.commit()
+        return log
+
+    def list_agent_activities(self, project_id: str, role: Optional[str] = None, limit: int = 50) -> List[AgentActivityLog]:
+        with self._get_conn() as conn:
+            if role:
+                cur = conn.execute(
+                    """SELECT log_id, project_id, sprint_id, role, action_type, tokens_used, duration_seconds, status, summary, created_at
+                       FROM agent_activity_logs WHERE project_id = ? AND role = ? ORDER BY created_at DESC LIMIT ?""",
+                    (project_id, role, limit)
+                )
+            else:
+                cur = conn.execute(
+                    """SELECT log_id, project_id, sprint_id, role, action_type, tokens_used, duration_seconds, status, summary, created_at
+                       FROM agent_activity_logs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?""",
+                    (project_id, limit)
+                )
+            return [
+                AgentActivityLog(
+                    log_id=r[0], project_id=r[1], sprint_id=r[2], role=r[3], action_type=r[4],
+                    tokens_used=r[5] or 0, duration_seconds=r[6] or 0.0, status=r[7], summary=r[8], created_at=r[9]
+                )
+                for r in cur.fetchall()
+            ]
+
+    def get_agent_metrics(self, project_id: str) -> Dict[str, Any]:
+        """Calculates aggregated performance metrics per role for a project."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """SELECT role, COUNT(*), SUM(tokens_used), AVG(duration_seconds),
+                          SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END)
+                   FROM agent_activity_logs WHERE project_id = ? GROUP BY role""",
+                (project_id,)
+            )
+            metrics = {}
+            for row in cur.fetchall():
+                role, total_tasks, total_tokens, avg_duration, success_count = row
+                metrics[role] = {
+                    "total_actions": total_tasks,
+                    "total_tokens": total_tokens or 0,
+                    "avg_duration_seconds": round(avg_duration or 0.0, 2),
+                    "success_rate": round((success_count / total_tasks * 100) if total_tasks else 100.0, 1)
+                }
+            return metrics
+
+    # ─── Agent Sprint Logs ───────────────────────────────────────
+    def save_agent_sprint_log(
+        self,
+        project_id: str,
+        sprint_id: str,
+        role: str,
+        step_label: str,
+        response_text: str,
+        tokens_used: int = 0
+    ) -> str:
+        """Persist the full response text of an agent step for a sprint."""
+        log_id = str(uuid.uuid4())
+        now = time.time()
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO agent_sprint_logs
+                   (log_id, project_id, sprint_id, role, step_label, response_text, tokens_used, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (log_id, project_id, sprint_id, role, step_label, response_text, tokens_used, now)
+            )
+            conn.commit()
+        return log_id
+
+    def get_agent_sprint_logs(self, sprint_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all agent step logs for a specific sprint."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """SELECT log_id, project_id, sprint_id, role, step_label, response_text, tokens_used, created_at
+                   FROM agent_sprint_logs WHERE sprint_id = ? ORDER BY created_at ASC""",
+                (sprint_id,)
+            )
+            return [
+                {
+                    "log_id": r[0],
+                    "project_id": r[1],
+                    "sprint_id": r[2],
+                    "role": r[3],
+                    "step_label": r[4],
+                    "response_text": r[5],
+                    "tokens_used": r[6] or 0,
+                    "created_at": r[7]
+                }
+                for r in cur.fetchall()
+            ]

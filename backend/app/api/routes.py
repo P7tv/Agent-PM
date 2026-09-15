@@ -16,12 +16,13 @@ from app.services.orchestrator import Orchestrator
 from app.services.tech_lead_service import TechLeadService
 from app.services.git_service import GitService
 from app.services.skill_manager import SkillManager
-from app.services.console_service import ConsoleService, parse_target_role
+from app.services.console_service import ConsoleService, parse_target_role, is_actionable_directive
 from app.services.sprint_queue import SprintQueue
 from app.api.websocket_hub import hub
 from app.models.schemas import (
     DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest,
-    SetSkillModeRequest, SprintRecord, QueueItem, CustomAgentCreateRequest, AutoGenerateRosterRequest
+    SetSkillModeRequest, SprintRecord, QueueItem, CustomAgentCreateRequest, AutoGenerateRosterRequest,
+    TaskItem, BacklogItem, ProjectMemory, AgentActivityLog
 )
 
 router = APIRouter(prefix="/api")
@@ -36,7 +37,7 @@ sprint_queue = SprintQueue(store=store, orchestrator=orchestrator, broadcast_fn=
 tech_lead_svc = TechLeadService(store=store, pm=pm)
 git_svc = GitService()
 skill_manager = SkillManager()
-console_svc = ConsoleService()
+console_svc = ConsoleService(store=store)
 
 class SkillUpdateRequest(BaseModel):
     content: str
@@ -66,11 +67,51 @@ class ValidatePathRequest(BaseModel):
 class ConsoleChatRequest(BaseModel):
     message: str
     attachments: Optional[List[dict]] = None
+    is_directive: Optional[bool] = False
 
 class ApplyChangeRequest(BaseModel):
     filepath: str
     content: str
     commit_message: Optional[str] = None
+
+class CreateBacklogItemRequest(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    category: Optional[str] = "feature"
+    priority: Optional[str] = "NORMAL"
+
+class UpdateBacklogItemRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+
+class CreateMemoryRequest(BaseModel):
+    title: str
+    content: str
+    category: Optional[str] = "architecture"
+
+class QueuePriorityRequest(BaseModel):
+    priority: str
+
+class QueueReorderRequest(BaseModel):
+    direction: str  # "up" or "down"
+
+class GitRemoteRequest(BaseModel):
+    name: str = "origin"
+    url: str
+
+class GitPushPullRequest(BaseModel):
+    remote: str = "origin"
+    branch: Optional[str] = None
+
+class GitBranchRequest(BaseModel):
+    branch_name: str
+    checkout: Optional[bool] = True
+
+class GitCheckoutRequest(BaseModel):
+    branch_name: str
 
 @router.post("/projects/validate-path")
 def validate_path(req: ValidatePathRequest):
@@ -128,6 +169,22 @@ def get_project_sprints(project_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     return store.get_sprints(project_id)
+
+@router.get("/projects/{project_id}/sprints/{sprint_id}/tasks", response_model=List[TaskItem])
+def get_sprint_tasks(project_id: str, sprint_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.get_sprint_tasks(sprint_id)
+
+@router.get("/projects/{project_id}/sprints/{sprint_id}/agent-logs")
+def get_sprint_agent_logs(project_id: str, sprint_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if hasattr(store, "get_agent_sprint_logs"):
+        return store.get_agent_sprint_logs(sprint_id)
+    return []
 
 @router.get("/projects/{project_id}/sprints/{sprint_id}/export")
 def export_sprint_release_notes(project_id: str, sprint_id: str):
@@ -211,6 +268,7 @@ def get_all_queue():
             "directive": it.directive,
             "status": it.status,
             "position": it.position,
+            "priority": getattr(it, "priority", "NORMAL"),
             "created_at": it.created_at
         })
     return result
@@ -222,6 +280,177 @@ async def cancel_global_queue_item(queue_id: str):
         raise HTTPException(status_code=404, detail="Queue item not found or already running")
     await hub.broadcast("QUEUE_UPDATED", {"cancelled_id": queue_id})
     return {"status": "CANCELLED", "queue_id": queue_id}
+
+@router.patch("/queue/{queue_id}/priority")
+async def set_global_queue_priority(queue_id: str, req: QueuePriorityRequest):
+    updated = store.set_queue_priority(queue_id, req.priority)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    await hub.broadcast("QUEUE_UPDATED", {"queue_id": queue_id, "priority": req.priority})
+    return {"status": "SUCCESS", "queue_id": queue_id, "priority": req.priority}
+
+@router.post("/queue/{queue_id}/reorder")
+async def reorder_global_queue_item(queue_id: str, req: QueueReorderRequest):
+    reordered = store.reorder_queue_item(queue_id, req.direction)
+    if not reordered:
+        raise HTTPException(status_code=400, detail="Cannot move item in that direction")
+    await hub.broadcast("QUEUE_UPDATED", {"queue_id": queue_id, "direction": req.direction})
+    return {"status": "SUCCESS", "queue_id": queue_id, "direction": req.direction}
+
+@router.patch("/projects/{project_id}/queue/{queue_id}/priority")
+async def set_queue_item_priority(project_id: str, queue_id: str, req: QueuePriorityRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    updated = store.set_queue_priority(queue_id, req.priority)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": queue_id, "priority": req.priority})
+    return {"status": "SUCCESS", "queue_id": queue_id, "priority": req.priority}
+
+@router.post("/projects/{project_id}/queue/{queue_id}/reorder")
+async def reorder_queue_item(project_id: str, queue_id: str, req: QueueReorderRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    reordered = store.reorder_queue_item(queue_id, req.direction)
+    if not reordered:
+        raise HTTPException(status_code=400, detail="Cannot move item in that direction")
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id})
+    return {"status": "SUCCESS", "queue_id": queue_id, "direction": req.direction}
+
+# ── Backlog Endpoints ─────────────────────────────────────────
+@router.get("/projects/{project_id}/backlog", response_model=List[BacklogItem])
+def get_project_backlog(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.get_backlog_items(project_id)
+
+@router.post("/projects/{project_id}/backlog", response_model=BacklogItem)
+async def create_backlog_item(project_id: str, req: CreateBacklogItemRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    item = store.create_backlog_item(
+        project_id=project_id,
+        title=req.title,
+        description=req.description or "",
+        category=req.category or "feature",
+        priority=req.priority or "NORMAL"
+    )
+    await hub.broadcast("BACKLOG_UPDATED", {"project_id": project_id, "item_id": item.item_id})
+    return item
+
+@router.put("/projects/{project_id}/backlog/{item_id}", response_model=BacklogItem)
+async def update_backlog_item(project_id: str, item_id: str, req: UpdateBacklogItemRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    updated = store.update_backlog_item(
+        item_id=item_id,
+        title=req.title,
+        description=req.description,
+        category=req.category,
+        priority=req.priority,
+        status=req.status
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Backlog item not found")
+    await hub.broadcast("BACKLOG_UPDATED", {"project_id": project_id, "item_id": item_id})
+    return updated
+
+@router.delete("/projects/{project_id}/backlog/{item_id}")
+async def delete_backlog_item(project_id: str, item_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    deleted = store.delete_backlog_item(item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Backlog item not found")
+    await hub.broadcast("BACKLOG_UPDATED", {"project_id": project_id, "deleted_id": item_id})
+    return {"status": "DELETED", "item_id": item_id}
+
+@router.post("/projects/{project_id}/backlog/{item_id}/promote")
+async def promote_backlog_item_to_sprint(project_id: str, item_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    items = store.get_backlog_items(project_id)
+    target = next((it for it in items if it.item_id == item_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Backlog item not found")
+    
+    directive_text = f"{target.title}"
+    if target.description:
+        directive_text += f" - {target.description}"
+    queue_item = sprint_queue.enqueue(project_id, directive_text, priority=target.priority)
+    store.update_backlog_item(item_id, status="QUEUED")
+
+    await hub.broadcast("BACKLOG_UPDATED", {"project_id": project_id, "item_id": item_id, "status": "QUEUED"})
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": queue_item.queue_id})
+    return {"status": "PROMOTED", "queue_id": queue_item.queue_id, "item_id": item_id}
+
+# ── Project Memories Endpoints ─────────────────────────────────
+@router.get("/projects/{project_id}/memories", response_model=List[ProjectMemory])
+def get_project_memories(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.get_project_memories(project_id)
+
+@router.post("/projects/{project_id}/memories", response_model=ProjectMemory)
+async def add_project_memory(project_id: str, req: CreateMemoryRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    mem = store.add_project_memory(
+        project_id=project_id,
+        title=req.title,
+        content=req.content,
+        category=req.category or "architecture"
+    )
+    await hub.broadcast("PROJECT_MEMORY_UPDATED", {"project_id": project_id, "memory_id": mem.memory_id})
+    return mem
+
+@router.delete("/projects/{project_id}/memories/{memory_id}")
+async def delete_project_memory(project_id: str, memory_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    deleted = store.delete_project_memory(memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory item not found")
+    await hub.broadcast("PROJECT_MEMORY_UPDATED", {"project_id": project_id, "deleted_id": memory_id})
+    return {"status": "DELETED", "memory_id": memory_id}
+
+# ── Agent Performance Analytics & Metrics Endpoints ───────────
+@router.get("/projects/{project_id}/agents/metrics")
+def get_project_agent_metrics(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.get_agent_metrics(project_id)
+
+@router.get("/projects/{project_id}/agents/{role}/metrics")
+def get_role_metrics(project_id: str, role: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    all_metrics = store.get_agent_metrics(project_id)
+    return all_metrics.get(role, {
+        "total_actions": 0,
+        "total_tokens": 0,
+        "avg_duration_seconds": 0.0,
+        "success_rate": 100.0
+    })
+
+@router.get("/projects/{project_id}/agents/activities", response_model=List[AgentActivityLog])
+def get_agent_activities(project_id: str, role: Optional[str] = None, limit: int = 50):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return store.list_agent_activities(project_id, role=role, limit=limit)
 
 @router.get("/projects/{project_id}/files")
 def get_project_files(project_id: str):
@@ -465,6 +694,56 @@ def export_git_patch(project_id: str):
         headers={"Content-Disposition": f'attachment; filename="{project_id}-changes.patch"'}
     )
 
+@router.get("/projects/{project_id}/git/remotes")
+def get_project_git_remotes(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"remotes": git_svc.get_remotes(p.workspace_path)}
+
+@router.post("/projects/{project_id}/git/remotes")
+def set_project_git_remote(project_id: str, req: GitRemoteRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    res = git_svc.set_remote(p.workspace_path, req.name, req.url)
+    return res
+
+@router.post("/projects/{project_id}/git/push")
+def push_project_git(project_id: str, req: GitPushPullRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return git_svc.git_push(p.workspace_path, remote=req.remote, branch=req.branch)
+
+@router.post("/projects/{project_id}/git/pull")
+def pull_project_git(project_id: str, req: GitPushPullRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return git_svc.git_pull(p.workspace_path, remote=req.remote, branch=req.branch)
+
+@router.get("/projects/{project_id}/git/branches")
+def list_project_git_branches(project_id: str):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"branches": git_svc.list_branches(p.workspace_path)}
+
+@router.post("/projects/{project_id}/git/branches")
+def create_project_git_branch(project_id: str, req: GitBranchRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return git_svc.create_branch(p.workspace_path, req.branch_name, checkout=bool(req.checkout))
+
+@router.post("/projects/{project_id}/git/checkout")
+def checkout_project_git_branch(project_id: str, req: GitCheckoutRequest):
+    p = store.get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return git_svc.switch_branch(p.workspace_path, req.branch_name)
+
 @router.get("/skills")
 def list_global_skills():
     skills = skill_manager.list_available_skills()
@@ -597,13 +876,31 @@ def assign_skill_to_agent(project_id: str, role: str, req: AssignSkillRequest):
         skill_tier=skill.tier,
         skill_title=skill.title
     )
+    equipped = list(agent.equipped_skills or [])
+    if skill.name not in equipped:
+        equipped.append(skill.name)
+    store.set_agent_status(
+        project_id=project_id,
+        role=role,
+        status=agent.status.value,
+        thought=agent.thought,
+        current_task_id=agent.current_task_id,
+        last_tool_call=agent.last_tool_call,
+        skill_name=skill.name,
+        skill_tier=skill.tier,
+        skill_title=skill.title,
+        equipped_skills=equipped,
+        skill_mode="MANUAL"
+    )
     return {
         "status": "SUCCESS",
         "project_id": project_id,
         "role": role,
         "skill_name": updated_state.skill_name,
         "skill_tier": updated_state.skill_tier,
-        "skill_title": updated_state.skill_title
+        "skill_title": updated_state.skill_title,
+        "equipped_skills": equipped,
+        "skill_mode": "MANUAL"
     }
 
 @router.post("/projects/{project_id}/agents/{role}/skills/add")
@@ -758,25 +1055,33 @@ async def console_chat(project_id: str, req: ConsoleChatRequest, bg: BackgroundT
     meta = store.get_project_metadata(project_id)
 
     async def run_console_chat():
-        # If @Team, dispatch directive to orchestrator
-        if target_role == "Team":
+        # Directive dispatch requires EXPLICIT Ctrl+Enter (is_directive=True) or @all/@team mention.
+        # Auto-detection via keyword matching was removed — it caused false positives on casual chat.
+        is_directive_cmd = bool(
+            getattr(req, "is_directive", False)   # Ctrl+Enter = explicit directive
+            or target_role == "Team"              # @all / @team = broadcast directive
+        )
+
+        if is_directive_cmd:
+            dispatch_text = (
+                f"🚀 **Tech Lead Dispatch:** รับทราบคำสั่ง PM: \"{clean_message}\" — กำลังเริ่มรัน Sprint และระดมทีม (Architect, Developers, QA) ลงมือทันทีครับ!"
+                if target_role != "Team"
+                else f"📢 Broadcasting directive to full team: {clean_message}"
+            )
             console_svc.add_message(
                 project_id=project_id,
-                sender="system",
-                content=f"📢 Broadcasting directive to full team: {clean_message}",
+                sender="TechLead" if target_role != "Team" else "system",
+                content=dispatch_text,
                 msg_type="system"
             )
             await hub.broadcast("CONSOLE_MESSAGE", {
                 "project_id": project_id,
-                "sender": "system",
-                "content": f"📢 Broadcasting directive to full team: {clean_message}",
+                "sender": "TechLead" if target_role != "Team" else "system",
+                "content": dispatch_text,
                 "msg_type": "system"
             })
-            await orchestrator.execute_pm_directive(
-                project_id=project_id,
-                directive=clean_message,
-                event_callback=hub.broadcast
-            )
+            item = sprint_queue.enqueue(project_id, clean_message)
+            await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
             return
 
         # Single agent chat
