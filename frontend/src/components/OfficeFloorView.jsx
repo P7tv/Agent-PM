@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   Compass, 
   Palette, 
@@ -18,11 +18,13 @@ import {
   Bug,
   Sparkles,
   UserPlus,
+  Users,
   X,
   Zap,
   Box,
   Activity,
-  Volume2
+  Volume2,
+  ChevronDown
 } from 'lucide-react';
 import TechLeadCard from './TechLeadCard';
 
@@ -66,12 +68,14 @@ export default function OfficeFloorView({
   onOpenStandup,
   onOpenAddAgent,
   onOpenAutoGenTeam,
-  onDeleteAgent
+  onDeleteAgent,
+  onOpenAgentWhisper
 }) {
   const activeCount = projects.length;
+  const [openTeamMenu, setOpenTeamMenu] = useState(null);
 
   return (
-    <div className="office-floor">
+    <div className="office-floor" onClick={() => setOpenTeamMenu(null)}>
       {projects.map((project, idx) => {
         const agents = agentStates[project.project_id] || [];
         const techLead = agents.find((a) => a.role === 'TechLead');
@@ -89,15 +93,44 @@ export default function OfficeFloorView({
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button
-                  className="view-btn"
-                  onClick={() => onOpenAutoGenTeam ? onOpenAutoGenTeam(project) : null}
-                  style={{ color: 'var(--primary)', borderColor: 'rgba(59, 130, 246, 0.4)' }}
-                  title="AI-Aligned Team Generator"
-                >
-                  <Sparkles size={14} />
-                  <span>⚡ AI Team</span>
-                </button>
+                {/* Consolidated Team Roster Menu */}
+                <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+                  <button
+                    className="view-btn"
+                    onClick={() => setOpenTeamMenu(openTeamMenu === project.project_id ? null : project.project_id)}
+                    style={{ color: 'var(--primary)', borderColor: 'rgba(59, 130, 246, 0.4)', fontWeight: '600' }}
+                    title="Manage Agent Roster"
+                  >
+                    <Users size={14} />
+                    <span>Team ({agents.length})</span>
+                    <ChevronDown size={11} />
+                  </button>
+                  {openTeamMenu === project.project_id && (
+                    <div className="team-roster-dropdown" onClick={() => setOpenTeamMenu(null)}>
+                      <button 
+                        className="team-dropdown-item"
+                        onClick={() => onOpenAutoGenTeam && onOpenAutoGenTeam(project)}
+                      >
+                        <Sparkles size={14} color="var(--primary)" />
+                        <div>
+                          <div style={{ fontWeight: '700' }}>⚡ AI Auto-Generate Team</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Scan workspace and generate tailored specialists</div>
+                        </div>
+                      </button>
+                      <button 
+                        className="team-dropdown-item"
+                        onClick={() => onOpenAddAgent && onOpenAddAgent(project)}
+                      >
+                        <UserPlus size={14} color="var(--success)" />
+                        <div>
+                          <div style={{ fontWeight: '700' }}>+ Add Custom Specialist</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Recruit a custom agent role and persona</div>
+                        </div>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <button
                   className="view-btn"
                   onClick={() => onOpenStandup(project.project_id, project.name)}
@@ -109,7 +142,7 @@ export default function OfficeFloorView({
                 <button
                   className="view-btn"
                   onClick={() => onFocusProject(project.project_id)}
-                  title="Enter detailed project view"
+                  title="Enter detailed project workspace"
                 >
                   <Eye size={14} />
                   <span>Deep Dive</span>
@@ -136,10 +169,15 @@ export default function OfficeFloorView({
               <TechLeadCard
                 agent={techLead}
                 onOpenStandup={() => onOpenStandup(project.project_id, project.name)}
-                onOpenWhisper={(role) => onAgentClick(project.project_id, role)}
+                onOpenWhisper={() => {
+                  if (onOpenAgentWhisper) {
+                    onOpenAgentWhisper(project, techLead);
+                  } else {
+                    onAgentClick(project.project_id, techLead.role);
+                  }
+                }}
               />
             )}
-
 
             {/* Sub-Agents Grid */}
             <div className="agent-desks-grid">
@@ -151,8 +189,14 @@ export default function OfficeFloorView({
                   <div
                     key={agent.role}
                     className={`agent-desk-card ${agent.status}`}
-                    onClick={() => onAgentClick(project.project_id, agent.role)}
-                    title={`Click to whisper instructions to ${agent.role}`}
+                    onClick={() => {
+                      if (onOpenAgentWhisper) {
+                        onOpenAgentWhisper(project, agent);
+                      } else {
+                        onAgentClick(project.project_id, agent.role);
+                      }
+                    }}
+                    title={`Click to inspect or whisper instructions to ${agent.role}`}
                     style={{ position: 'relative' }}
                   >
                     {onDeleteAgent && (

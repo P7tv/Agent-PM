@@ -51,7 +51,8 @@ export default function AddProjectModal({ isOpen, onClose, onAddProject }) {
     setIsSubmitting(true);
     setSubmitError('');
     try {
-      const projectId = name.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 16);
+      const baseId = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/^-+|-+$/g, '').slice(0, 14) || 'project';
+      const projectId = `${baseId}-${Date.now().toString(36).slice(-4)}`;
       await onAddProject({
         project_id: projectId,
         name: name.trim(),

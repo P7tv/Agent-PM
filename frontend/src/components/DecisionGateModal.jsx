@@ -1,15 +1,34 @@
-import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, XCircle, Send, MessageSquare } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { 
+  AlertCircle, 
+  CheckCircle2, 
+  XCircle, 
+  Send, 
+  MessageSquare, 
+  Lightbulb, 
+  Bot, 
+  Rocket 
+} from 'lucide-react';
 
 export function DecisionGateModal({ approval, onResolve }) {
   const [feedbackMode, setFeedbackMode] = useState(false);
   const [feedback, setFeedback] = useState('');
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (feedbackMode) {
+          setFeedbackMode(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [feedbackMode]);
+
   if (!approval) return null;
 
   const handleInjectAndApprove = () => {
-    // In a future iteration, the feedback text would be sent to the orchestrator
-    // For now, we approve with the feedback logged
     onResolve(approval.request_id, 'APPROVED');
     setFeedbackMode(false);
     setFeedback('');
@@ -58,8 +77,14 @@ export function DecisionGateModal({ approval, onResolve }) {
               <button className="btn-reject" onClick={() => { setFeedbackMode(false); setFeedback(''); }}>
                 Cancel
               </button>
-              <button className="btn-approve" onClick={handleInjectAndApprove} disabled={!feedback.trim()}>
-                💡 Inject & Approve
+              <button 
+                className="btn-approve" 
+                onClick={handleInjectAndApprove} 
+                disabled={!feedback.trim()}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Lightbulb size={14} />
+                <span>Inject & Approve</span>
               </button>
             </div>
           </div>
@@ -67,25 +92,37 @@ export function DecisionGateModal({ approval, onResolve }) {
 
         {!feedbackMode && (
           <div className="gate-actions" style={{ flexWrap: 'wrap' }}>
-            <button className="btn-reject" onClick={() => onResolve(approval.request_id, 'REJECTED')}>
-              ✕ Reject / Revise
+            <button 
+              className="btn-reject" 
+              onClick={() => onResolve(approval.request_id, 'REJECTED')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <XCircle size={14} />
+              <span>Reject / Revise</span>
             </button>
             <button
               className="view-btn"
-              style={{ border: '1px solid var(--border-medium)', padding: '8px 14px', fontSize: '13px', fontWeight: '600' }}
+              style={{ border: '1px solid var(--border-medium)', padding: '8px 14px', fontSize: '13px', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               onClick={() => setFeedbackMode(true)}
             >
-              💡 Inject Feedback
+              <Lightbulb size={14} />
+              <span>Inject Feedback</span>
             </button>
             <button
               className="view-btn"
-              style={{ border: '1px solid var(--border-medium)', padding: '8px 14px', fontSize: '13px', fontWeight: '600' }}
+              style={{ border: '1px solid var(--border-medium)', padding: '8px 14px', fontSize: '13px', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               onClick={handleLetAIDecide}
             >
-              🤖 Let AI Decide
+              <Bot size={14} />
+              <span>Let AI Decide</span>
             </button>
-            <button className="btn-approve" onClick={() => onResolve(approval.request_id, 'APPROVED')}>
-              Approve & Proceed 🚀
+            <button 
+              className="btn-approve" 
+              onClick={() => onResolve(approval.request_id, 'APPROVED')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <Rocket size={14} />
+              <span>Approve & Proceed</span>
             </button>
           </div>
         )}
@@ -96,6 +133,17 @@ export function DecisionGateModal({ approval, onResolve }) {
 
 export function WhisperModal({ whisperTarget, onClose, onSendWhisper }) {
   const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose?.();
+    };
+    if (whisperTarget) {
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }
+  }, [whisperTarget, onClose]);
+
   if (!whisperTarget) return null;
 
   const handleSubmit = (e) => {

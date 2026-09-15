@@ -14,6 +14,7 @@ import {
   ArrowRight,
   ShieldCheck
 } from 'lucide-react';
+import { useToast } from './Toast';
 
 export default function SkillStoreModal({
   isOpen,
@@ -23,6 +24,17 @@ export default function SkillStoreModal({
   agents = [],
   onSkillAssigned
 }) {
+  const toast = useToast();
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
   const [activeTab, setActiveTab] = useState('installed'); // 'installed' | 'download'
   const [skills, setSkills] = useState([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
@@ -74,14 +86,15 @@ export default function SkillStoreModal({
       if (res.ok) {
         const data = await res.json();
         setAssignSuccessRole({ role, skillName });
+        toast.success(`Assigned ${skillName} to ${role}`);
         setTimeout(() => setAssignSuccessRole(null), 3000);
         if (onSkillAssigned) onSkillAssigned(role, skillName);
       } else {
         const err = await res.json();
-        alert(`Failed to assign skill: ${err.detail || 'Unknown error'}`);
+        toast.error(`Failed to assign skill: ${err.detail || 'Unknown error'}`);
       }
     } catch (err) {
-      alert(`Network error: ${err.message}`);
+      toast.error(`Network error: ${err.message}`);
     } finally {
       setAssigningSkillName(null);
     }

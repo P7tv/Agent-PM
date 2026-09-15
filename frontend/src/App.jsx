@@ -21,8 +21,22 @@ import TechLeadStandupModal from './components/TechLeadStandupModal';
 import DeleteProjectModal from './components/DeleteProjectModal';
 import AddAgentModal from './components/AddAgentModal';
 import AutoGenerateTeamModal from './components/AutoGenerateTeamModal';
+import QuickWhisperDrawer from './components/QuickWhisperDrawer';
+import BacklogBoardModal from './components/BacklogBoardModal';
+import ProjectJournalModal from './components/ProjectJournalModal';
+import SprintCompletionModal from './components/SprintCompletionModal';
+import { ToastProvider, useToast } from './components/Toast';
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
+  );
+}
+
+function AppContent() {
+  const toast = useToast();
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('theme') || 'dark';
   });
@@ -30,6 +44,7 @@ export default function App() {
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [focusedProjectId, setFocusedProjectId] = useState(null);
+  const [activeWhisperAgent, setActiveWhisperAgent] = useState(null); // { project, agent }
 
   const [agentStates, setAgentStates] = useState({}); // { [projId]: [AgentState] }
   const [tasksByProject, setTasksByProject] = useState({}); // { [projId]: [TaskItem] }
@@ -44,6 +59,9 @@ export default function App() {
   const [projectToDelete, setProjectToDelete] = useState(null);
   const [addAgentProject, setAddAgentProject] = useState(null);
   const [autoGenProject, setAutoGenProject] = useState(null);
+  const [backlogProject, setBacklogProject] = useState(null); // { projectId, projectName }
+  const [journalProject, setJournalProject] = useState(null); // { projectId, projectName }
+  const [completedSprint, setCompletedSprint] = useState(null); // { sprint data for modal }
   const [wsConnected, setWsConnected] = useState(false);
   const [globalQueue, setGlobalQueue] = useState([]);
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
@@ -100,6 +118,32 @@ export default function App() {
       fetchGlobalQueue();
     } catch (e) {
       console.error('Error cancelling queue item:', e);
+    }
+  };
+
+  const handleSetQueuePriority = async (queueId, priority) => {
+    try {
+      await fetch(`/api/queue/${queueId}/priority`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority })
+      });
+      fetchGlobalQueue();
+    } catch (e) {
+      console.error('Error updating queue priority:', e);
+    }
+  };
+
+  const handleReorderQueueItem = async (queueId, direction) => {
+    try {
+      await fetch(`/api/queue/${queueId}/reorder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction })
+      });
+      fetchGlobalQueue();
+    } catch (e) {
+      console.error('Error reordering queue item:', e);
     }
   };
 
@@ -200,7 +244,22 @@ export default function App() {
             setActiveApproval(null);
           } else if (evType === 'PROJECT_DELETED') {
             fetchData();
-          } else if (['SPRINT_STARTED', 'PIPELINE_COMPLETED', 'PIPELINE_REJECTED', 'PIPELINE_HALTED'].includes(evType)) {
+          } else if (evType === 'PIPELINE_COMPLETED') {
+            if (projId) {
+              fetchSprints(projId);
+              // Show sprint completion modal with release summary
+              setCompletedSprint({
+                sprint_id: data.sprint_id,
+                project_id: projId,
+                directive: data.directive,
+                release_summary: data.summary,
+                total_tokens: data.total_tokens,
+                tasks_count: data.tasks_count,
+                started_at: null,
+                completed_at: Date.now() / 1000
+              });
+            }
+          } else if (['SPRINT_STARTED', 'PIPELINE_REJECTED', 'PIPELINE_HALTED'].includes(evType)) {
             if (projId) fetchSprints(projId);
           } else if (['QUEUE_UPDATED', 'QUEUE_ITEM_STARTED', 'QUEUE_ITEM_FINISHED', 'DIRECTIVE_STARTED'].includes(evType)) {
             fetchGlobalQueue();
@@ -235,6 +294,16 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isQueueDrawerOpen) {
+        setIsQueueDrawerOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isQueueDrawerOpen]);
+
   const handleDispatchDirective = async (projectId, directive) => {
     await fetch(`/api/projects/${projectId}/directive`, {
       method: 'POST',
@@ -264,11 +333,11 @@ export default function App() {
     });
   };
 
-  const handleSendConsoleMessage = async (projectId, message, attachments = []) => {
+  const handleSendConsoleMessage = async (projectId, message, attachments = [], isDirective = false) => {
     await fetch(`/api/projects/${projectId}/console/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, attachments })
+      body: JSON.stringify({ message, attachments, is_directive: isDirective })
     });
   };
 
@@ -343,12 +412,14 @@ export default function App() {
         method: 'DELETE'
       });
       if (res.ok) {
+        toast.success(`Removed ${role} from team`);
         await fetchProjectDetails(projectId);
       } else {
         const err = await res.json();
-        alert(err.detail || 'Failed to remove agent');
+        toast.error(err.detail || 'Failed to remove agent');
       }
     } catch (e) {
+      toast.error(`Error deleting agent: ${e.message}`);
       console.error('Failed to delete agent:', e);
     }
   };
@@ -464,7 +535,9 @@ export default function App() {
 
       {/* Global Queue Drawer */}
       {isQueueDrawerOpen && (
-        <div className="queue-drawer-container">
+        <>
+          <div className="queue-drawer-backdrop" onClick={() => setIsQueueDrawerOpen(false)} />
+          <div className="queue-drawer-container">
           <div className="queue-drawer-header">
             <div className="queue-drawer-title-wrap">
               <ListOrdered size={16} color="var(--primary)" />
@@ -493,10 +566,32 @@ export default function App() {
               <div className="queue-drawer-list">
                 {globalQueue.map((item) => {
                   const isRunning = item.status === 'RUNNING';
+                  const priority = item.priority || 'NORMAL';
+                  const priorityClass = `priority-${priority.toLowerCase()}`;
+
                   return (
                     <div key={item.queue_id} className={`queue-drawer-card ${isRunning ? 'is-running' : ''}`}>
                       <div className="queue-card-header">
                         <span className="queue-card-project-tag">{item.project_name || item.project_id}</span>
+
+                        {/* Priority Selector / Badge */}
+                        {!isRunning ? (
+                          <select
+                            value={priority}
+                            onChange={(e) => handleSetQueuePriority(item.queue_id, e.target.value)}
+                            className={`priority-badge ${priorityClass}`}
+                            style={{ border: 'none', cursor: 'pointer', outline: 'none', fontSize: '10px' }}
+                            title="Change priority"
+                          >
+                            <option value="URGENT">🔥 Urgent</option>
+                            <option value="HIGH">⚡ High</option>
+                            <option value="NORMAL">Normal</option>
+                            <option value="LOW">Low</option>
+                          </select>
+                        ) : (
+                          <span className={`priority-badge ${priorityClass}`}>{priority}</span>
+                        )}
+
                         <span className={`queue-card-status ${isRunning ? 'status-running' : 'status-queued'}`}>
                           {isRunning ? (
                             <>
@@ -507,9 +602,33 @@ export default function App() {
                             <span>Queued #{item.position + 1}</span>
                           )}
                         </span>
+
+                        {/* Reorder Up/Down for queued items */}
+                        {!isRunning && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                            <button
+                              onClick={() => handleReorderQueueItem(item.queue_id, 'up')}
+                              className="view-btn"
+                              style={{ fontSize: '10px', padding: '1px 5px', height: 'auto' }}
+                              title="Move Up in Queue"
+                            >
+                              ▲
+                            </button>
+                            <button
+                              onClick={() => handleReorderQueueItem(item.queue_id, 'down')}
+                              className="view-btn"
+                              style={{ fontSize: '10px', padding: '1px 5px', height: 'auto' }}
+                              title="Move Down in Queue"
+                            >
+                              ▼
+                            </button>
+                          </div>
+                        )}
+
                         <span className="queue-card-time">
                           {new Date(item.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                         </span>
+
                         {!isRunning && (
                           <button
                             className="queue-card-cancel-btn"
@@ -528,16 +647,27 @@ export default function App() {
             )}
           </div>
         </div>
+        </>
       )}
 
-      {/* Persistent PM Directive Box */}
-      <PMCommandBar
-        projects={projects}
-        activeProjectId={activeProjectId}
-        onSelectProject={setActiveProjectId}
-        onDispatchDirective={handleDispatchDirective}
-        sprintCost={sprintCost}
-      />
+      {/* Persistent PM Directive Box — shown in Floor and Split modes */}
+      {viewMode !== 'FOCUS' && (
+        <PMCommandBar
+          projects={projects}
+          activeProjectId={activeProjectId}
+          onSelectProject={setActiveProjectId}
+          onDispatchDirective={handleDispatchDirective}
+          onOpenBacklog={(pid) => {
+            const p = projects.find(pr => pr.project_id === pid);
+            setBacklogProject({ projectId: pid, projectName: p?.name });
+          }}
+          onOpenJournal={(pid) => {
+            const p = projects.find(pr => pr.project_id === pid);
+            setJournalProject({ projectId: pid, projectName: p?.name });
+          }}
+          sprintCost={sprintCost}
+        />
+      )}
 
       {/* Main Viewport */}
       <main className="content-area">
@@ -555,6 +685,7 @@ export default function App() {
             onOpenAddAgent={(proj) => setAddAgentProject(proj)}
             onOpenAutoGenTeam={(proj) => setAutoGenProject(proj)}
             onDeleteAgent={handleDeleteCustomAgent}
+            onOpenAgentWhisper={(proj, agent) => setActiveWhisperAgent({ project: proj, agent })}
           />
         )}
 
@@ -630,6 +761,48 @@ export default function App() {
         onClose={() => setAutoGenProject(null)}
         onConfirmTeam={handleApplyGeneratedTeam}
       />
+
+      <QuickWhisperDrawer
+        isOpen={Boolean(activeWhisperAgent)}
+        onClose={() => setActiveWhisperAgent(null)}
+        project={activeWhisperAgent?.project}
+        agent={activeWhisperAgent?.agent}
+        onSendWhisper={handleSendWhisper}
+        onDeepDive={(projId) => {
+          setActiveWhisperAgent(null);
+          handleFocusProject(projId);
+        }}
+      />
+
+      <BacklogBoardModal
+        isOpen={Boolean(backlogProject)}
+        onClose={() => setBacklogProject(null)}
+        projectId={backlogProject?.projectId}
+        projectName={backlogProject?.projectName}
+      />
+
+      <ProjectJournalModal
+        isOpen={Boolean(journalProject)}
+        onClose={() => setJournalProject(null)}
+        projectId={journalProject?.projectId}
+        projectName={journalProject?.projectName}
+      />
+
+      {completedSprint && (
+        <SprintCompletionModal
+          sprint={completedSprint}
+          projectId={completedSprint.project_id}
+          onClose={() => setCompletedSprint(null)}
+          onViewHistory={() => {
+            setCompletedSprint(null);
+            // Navigate to Focus Room + Sprints & QA tab if possible
+            if (completedSprint.project_id) {
+              setFocusedProjectId(completedSprint.project_id);
+              setViewMode('FOCUS');
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

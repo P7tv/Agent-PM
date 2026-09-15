@@ -3,22 +3,30 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { RichCodeBlock } from './RichCodeBlock';
 import { ActivityAccordion } from './ActivityAccordion';
-import { User, Paperclip, FileCode2, CheckCircle2, Loader2, Play, XCircle } from 'lucide-react';
+import { 
+  User, Paperclip, FileCode2, CheckCircle2, Loader2, Play, XCircle, Eye,
+  Bot, Compass, Layout, Server, Palette, FlaskConical, Bell, ShieldCheck, FileText, Sparkles
+} from 'lucide-react';
+import { DiffPreviewModal } from './DiffPreviewModal';
+import { useToast } from '../Toast';
 
 const ROLE_META = {
-  TechLead: { color: '#f59e0b', emoji: '👑', label: 'Tech Lead' },
-  Architect: { color: '#8b5cf6', emoji: '🏛️', label: 'Architect' },
-  FrontendDev: { color: '#06b6d4', emoji: '⚛️', label: 'Frontend Dev' },
-  BackendDev: { color: '#10b981', emoji: '⚙️', label: 'Backend Dev' },
-  Designer: { color: '#ec4899', emoji: '🎨', label: 'Designer' },
-  QATester: { color: '#ef4444', emoji: '🧪', label: 'QA Tester' },
-  system: { color: '#64748b', emoji: '🔔', label: 'System' },
-  user: { color: '#3b82f6', emoji: '👤', label: 'You' },
+  TechLead: { color: '#f59e0b', icon: Bot, label: 'Tech Lead' },
+  Architect: { color: '#8b5cf6', icon: Compass, label: 'Architect' },
+  FrontendDev: { color: '#06b6d4', icon: Layout, label: 'Frontend Dev' },
+  BackendDev: { color: '#10b981', icon: Server, label: 'Backend Dev' },
+  Designer: { color: '#ec4899', icon: Palette, label: 'Designer' },
+  QATester: { color: '#ef4444', icon: FlaskConical, label: 'QA Tester' },
+  Reviewer: { color: '#6366f1', icon: ShieldCheck, label: 'Reviewer' },
+  DocWriter: { color: '#14b8a6', icon: FileText, label: 'Doc Writer' },
+  system: { color: '#64748b', icon: Bell, label: 'System' },
+  user: { color: '#3b82f6', icon: User, label: 'You' },
 };
 
 export function ChatMessageItem({ msg, onApply }) {
   const isUser = msg.sender === 'user';
   const meta = ROLE_META[msg.sender] || ROLE_META.system;
+  const RoleIcon = meta.icon || Bot;
 
   return (
     <div style={{
@@ -33,7 +41,7 @@ export function ChatMessageItem({ msg, onApply }) {
           display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px',
           color: isUser ? '#fff' : meta.color, border: isUser ? 'none' : `1px solid ${meta.color}55`
         }}>
-          {isUser ? <User size={14} /> : meta.emoji}
+          {isUser ? <User size={14} /> : <RoleIcon size={14} />}
         </div>
         <span style={{ fontSize: '13px', fontWeight: 600, color: isUser ? 'var(--text-primary)' : meta.color }}>
           {isUser ? 'You' : meta.label}
@@ -42,6 +50,31 @@ export function ChatMessageItem({ msg, onApply }) {
           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
             {new Date(msg.created_at).toLocaleTimeString()}
           </span>
+        )}
+        {msg.active_skills && msg.active_skills.length > 0 && (
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginLeft: 'auto' }}>
+            {msg.active_skills.map((sk) => (
+              <span
+                key={sk}
+                style={{
+                  fontSize: '10px',
+                  fontWeight: '700',
+                  padding: '2px 7px',
+                  borderRadius: '10px',
+                  background: 'rgba(59, 130, 246, 0.12)',
+                  color: 'var(--primary-text)',
+                  border: '1px solid rgba(59, 130, 246, 0.25)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '3px'
+                }}
+                title={`Activated Skill: ${sk}`}
+              >
+                <Sparkles size={11} style={{ flexShrink: 0 }} />
+                <span>{sk}</span>
+              </span>
+            ))}
+          </div>
         )}
       </div>
 
@@ -113,9 +146,11 @@ export function ChatMessageItem({ msg, onApply }) {
 
 // ─── Code Proposal Card ──────────────────────────────────────
 function CodeProposalCard({ proposal, projectId, onApplied }) {
+  const toast = useToast();
   const [applying, setApplying] = React.useState(false);
   const [applied, setApplied] = React.useState(proposal.status === 'applied');
   const [rejected, setRejected] = React.useState(false);
+  const [isDiffOpen, setIsDiffOpen] = React.useState(false);
 
   const handleApply = async () => {
     setApplying(true);
@@ -131,10 +166,15 @@ function CodeProposalCard({ proposal, projectId, onApplied }) {
       });
       if (res.ok) {
         setApplied(true);
+        setIsDiffOpen(false);
+        toast.success(`Applied changes to ${proposal.filepath}`);
         if (onApplied) onApplied(proposal.filepath);
+      } else {
+        toast.error(`Failed to apply changes to ${proposal.filepath}`);
       }
     } catch (err) {
       console.error('Apply failed:', err);
+      toast.error(`Error applying changes: ${err.message || 'Network error'}`);
     } finally {
       setApplying(false);
     }
@@ -186,6 +226,19 @@ function CodeProposalCard({ proposal, projectId, onApplied }) {
                 Skip
               </button>
               <button
+                onClick={() => setIsDiffOpen(true)}
+                style={{
+                  fontSize: '11px', padding: '3px 10px', borderRadius: '6px',
+                  border: '1px solid var(--border-medium)', background: 'var(--bg-surface-elevated)',
+                  color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: '600',
+                  display: 'flex', alignItems: 'center', gap: '4px'
+                }}
+                title="Review diff before applying"
+              >
+                <Eye size={12} />
+                <span>Review Diff</span>
+              </button>
+              <button
                 onClick={handleApply}
                 disabled={applying}
                 style={{
@@ -202,6 +255,15 @@ function CodeProposalCard({ proposal, projectId, onApplied }) {
           )}
         </div>
       </div>
+
+      <DiffPreviewModal
+        isOpen={isDiffOpen}
+        onClose={() => setIsDiffOpen(false)}
+        proposal={proposal}
+        projectId={projectId}
+        onConfirmApply={handleApply}
+        applying={applying}
+      />
       {/* Code Preview */}
       <pre style={{
         margin: 0,

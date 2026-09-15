@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, TerminalSquare, Sparkles, ChevronDown } from 'lucide-react';
+import { Send, TerminalSquare, Sparkles, ChevronDown, ListTodo, BookMarked } from 'lucide-react';
 
 const DIRECTIVE_TEMPLATES = [
   { label: 'Feature: Auth', text: 'Implement user authentication with login, registration, JWT tokens, and password hashing.' },
@@ -18,6 +18,8 @@ export default function PMCommandBar({
   activeProjectId,
   onSelectProject,
   onDispatchDirective,
+  onOpenBacklog,
+  onOpenJournal,
   sprintCost = { tokens: 0, costUSD: '0.00' }
 }) {
   const [directive, setDirective] = useState('');
@@ -76,6 +78,32 @@ export default function PMCommandBar({
             <Sparkles size={13} />
             <span>Templates</span>
             <ChevronDown size={11} className={showTemplates ? 'rotate-180' : ''} />
+          </button>
+        </div>
+
+        {/* Quick Backlog & Journal Access */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <button
+            type="button"
+            className="template-toggle-btn"
+            onClick={() => onOpenBacklog && onOpenBacklog(activeProjectId)}
+            disabled={!activeProjectId}
+            title="Open Product Backlog & Story Board"
+            style={{ height: '32px', padding: '0 8px' }}
+          >
+            <ListTodo size={13} color="var(--primary)" />
+            <span>Backlog</span>
+          </button>
+          <button
+            type="button"
+            className="template-toggle-btn"
+            onClick={() => onOpenJournal && onOpenJournal(activeProjectId)}
+            disabled={!activeProjectId}
+            title="Open Agent Memory & Project Journal"
+            style={{ height: '32px', padding: '0 8px' }}
+          >
+            <BookMarked size={13} color="#8b5cf6" />
+            <span>Journal</span>
           </button>
         </div>
 
