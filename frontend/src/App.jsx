@@ -47,6 +47,42 @@ function AppContent() {
         tab: parts[2] || 'mission-hub'
       };
     }
+    if (parts[0] === 'split') {
+      return {
+        viewMode: 'SPLIT',
+        projectId: null,
+        tab: 'mission-hub'
+      };
+    }
+    if (parts[0] === 'queue') {
+      return {
+        viewMode: 'OFFICE',
+        projectId: null,
+        tab: 'mission-hub',
+        openQueue: true
+      };
+    }
+    if (parts[0] === 'office') {
+      return {
+        viewMode: 'OFFICE',
+        projectId: null,
+        tab: 'mission-hub'
+      };
+    }
+
+    // Fallback to localStorage if no specific route is given in hash
+    try {
+      const saved = localStorage.getItem('agent_pm_last_route');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.viewMode) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse last route:', e);
+    }
+
     return {
       viewMode: 'OFFICE',
       projectId: null,
@@ -60,6 +96,7 @@ function AppContent() {
   });
   const [viewMode, setViewMode] = useState(initialRoute.viewMode);
   const [projects, setProjects] = useState([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [activeProjectId, setActiveProjectId] = useState(initialRoute.projectId);
   const [focusedProjectId, setFocusedProjectId] = useState(initialRoute.projectId);
   const [activeTabFromRoute, setActiveTabFromRoute] = useState(initialRoute.tab);
@@ -83,7 +120,7 @@ function AppContent() {
   const [completedSprint, setCompletedSprint] = useState(null); // { sprint data for modal }
   const [wsConnected, setWsConnected] = useState(false);
   const [globalQueue, setGlobalQueue] = useState([]);
-  const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
+  const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(Boolean(initialRoute.openQueue));
 
   const socketRef = useRef(null);
 
@@ -98,6 +135,9 @@ function AppContent() {
       }
       if (r.tab) {
         setActiveTabFromRoute(r.tab);
+      }
+      if (r.openQueue) {
+        setIsQueueDrawerOpen(true);
       }
     };
     window.addEventListener('hashchange', handleHashChange);
@@ -121,14 +161,44 @@ function AppContent() {
       const data = await res.json();
       
       setProjects(data);
+      setIsLoadingProjects(false);
+
       const route = parseRoute();
       if (route.projectId && data.some(p => p.project_id === route.projectId)) {
         setActiveProjectId(route.projectId);
         setFocusedProjectId(route.projectId);
         setViewMode('FOCUS');
         if (route.tab) setActiveTabFromRoute(route.tab);
-      } else if (data.length > 0 && (!activeProjectId || !data.some(p => p.project_id === activeProjectId))) {
-        setActiveProjectId(data[0].project_id);
+        window.location.hash = `#/project/${route.projectId}/${route.tab || 'mission-hub'}`;
+        try {
+          localStorage.setItem('agent_pm_last_route', JSON.stringify({
+            viewMode: 'FOCUS',
+            projectId: route.projectId,
+            tab: route.tab || 'mission-hub'
+          }));
+        } catch (e) {}
+      } else if (route.viewMode === 'SPLIT') {
+        setViewMode('SPLIT');
+        window.location.hash = '#/split';
+        if (data.length > 0 && !activeProjectId) {
+          setActiveProjectId(data[0].project_id);
+        }
+      } else {
+        if (route.projectId && !data.some(p => p.project_id === route.projectId)) {
+          toast.info('Project not found, showing Office Floor');
+        }
+        setViewMode('OFFICE');
+        window.location.hash = '#/office';
+        if (data.length > 0 && (!activeProjectId || !data.some(p => p.project_id === activeProjectId))) {
+          setActiveProjectId(data[0].project_id);
+        }
+        try {
+          localStorage.setItem('agent_pm_last_route', JSON.stringify({
+            viewMode: 'OFFICE',
+            projectId: null,
+            tab: 'mission-hub'
+          }));
+        } catch (e) {}
       }
 
       // Fetch agents, tasks, console history, and sprints for each project
@@ -477,12 +547,39 @@ function AppContent() {
     setViewMode('FOCUS');
     setActiveTabFromRoute(tab);
     window.location.hash = `#/project/${projectId}/${tab}`;
+    try {
+      localStorage.setItem('agent_pm_last_route', JSON.stringify({
+        viewMode: 'FOCUS',
+        projectId,
+        tab
+      }));
+    } catch (e) {}
   };
 
   const handleBackToOverview = () => {
     setViewMode('OFFICE');
     setFocusedProjectId(null);
-    window.location.hash = '#/';
+    window.location.hash = '#/office';
+    try {
+      localStorage.setItem('agent_pm_last_route', JSON.stringify({
+        viewMode: 'OFFICE',
+        projectId: null,
+        tab: 'mission-hub'
+      }));
+    } catch (e) {}
+  };
+
+  const handleSwitchToSplit = () => {
+    setViewMode('SPLIT');
+    setFocusedProjectId(null);
+    window.location.hash = '#/split';
+    try {
+      localStorage.setItem('agent_pm_last_route', JSON.stringify({
+        viewMode: 'SPLIT',
+        projectId: null,
+        tab: 'mission-hub'
+      }));
+    } catch (e) {}
   };
 
   const handleRerunSprint = (directive) => {
@@ -503,7 +600,7 @@ function AppContent() {
     <div className="app-container">
       {/* Top Header */}
       <header className="app-header">
-        <div className="brand-logo">
+        <div className="brand-logo" onClick={handleBackToOverview} style={{ cursor: 'pointer' }} title="Go to Office Floor">
           <div className="brand-icon">
             <Layers size={20} />
           </div>
@@ -519,14 +616,14 @@ function AppContent() {
           <div className="view-switcher">
             <button
               className={`view-btn ${viewMode === 'OFFICE' ? 'active' : ''}`}
-              onClick={() => setViewMode('OFFICE')}
+              onClick={handleBackToOverview}
             >
               <Building2 size={14} />
               <span>Office Floor</span>
             </button>
             <button
               className={`view-btn ${viewMode === 'SPLIT' ? 'active' : ''}`}
-              onClick={() => setViewMode('SPLIT')}
+              onClick={handleSwitchToSplit}
             >
               <Columns size={14} />
               <span>Dual Split</span>
@@ -534,7 +631,7 @@ function AppContent() {
             {focusedProject && (
               <button
                 className={`view-btn ${viewMode === 'FOCUS' ? 'active' : ''}`}
-                onClick={() => setViewMode('FOCUS')}
+                onClick={() => handleFocusProject(focusedProject.project_id, activeTabFromRoute)}
               >
                 <Focus size={14} />
                 <span>{focusedProject.name}</span>
@@ -750,6 +847,26 @@ function AppContent() {
             onDispatchDirective={handleDispatchDirective}
             onOpenStandup={(pid, pname) => setStandupProject({ projectId: pid, projectName: pname })}
           />
+        )}
+
+        {isLoadingProjects && viewMode === 'FOCUS' && (
+          <div className="view-loading-skeleton" style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: '420px',
+            gap: '14px',
+            color: 'var(--text-muted)'
+          }}>
+            <Loader2 size={36} className="spin-slow" color="var(--primary)" />
+            <div style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)' }}>
+              Loading Project Workspace...
+            </div>
+            <div style={{ fontSize: '12px' }}>
+              Restoring agents, backlog, and sprint pipeline
+            </div>
+          </div>
         )}
 
         {viewMode === 'FOCUS' && focusedProject && (

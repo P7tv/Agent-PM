@@ -2457,6 +2457,256 @@ textarea:focus-visible {
   background: rgba(34, 197, 94, 0.5);
 }
 
+/* ==========================================================================
+   Responsive Design Overhaul (UI/UX Pro Max)
+   Breakpoints: 1024px (Laptop/Tablet-L), 960px (Tablet), 768px (Tablet-P/Mobile-L), 480px (Mobile)
+   ========================================================================== */
 
+/* Focus Room View Elements */
+.focus-room-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
 
+.focus-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
+.focus-header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.focus-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.focus-room-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+}
+
+.focus-roster-column {
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  height: fit-content;
+}
+
+.mission-split-container {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  flex: 1;
+  min-height: 420px;
+}
+
+.mission-flex-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 420px;
+}
+
+.mission-chat-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.mission-chat-column.is-split {
+  border-right: 1px solid var(--border-subtle);
+}
+
+/* Tablet & Smaller Laptops (<= 1024px) */
+@media (max-width: 1024px) {
+  .focus-room-layout {
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+  }
+
+  .mission-split-container {
+    grid-template-columns: 1fr;
+  }
+
+  .mission-chat-column.is-split {
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+}
+
+/* Tablets & Small Screens (<= 960px) */
+@media (max-width: 960px) {
+  .focus-room-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .focus-roster-column {
+    order: 2;
+    width: 100%;
+  }
+
+  .dual-split-view {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+/* Mobile Devices (<= 768px) */
+@media (max-width: 768px) {
+  .app-header {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 10px 14px;
+    gap: 10px;
+  }
+
+  .brand-logo {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .brand-subtitle {
+    display: none;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .view-switcher {
+    flex: 1;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .view-btn {
+    padding: 5px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .content-area {
+    padding: 12px !important;
+  }
+
+  .focus-room-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .back-to-overview-btn {
+    align-self: flex-start;
+  }
+
+  .focus-header-actions {
+    overflow-x: auto;
+    padding-bottom: 4px;
+    width: 100%;
+  }
+
+  .pm-command-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pm-input-wrapper {
+    width: 100%;
+  }
+
+  .directive-templates-drawer {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  .template-chips-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .office-floor {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .room-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .queue-drawer-container {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+
+  .sprint-pipeline-stepper {
+    overflow-x: auto;
+    padding: 10px;
+  }
+
+  .stepper-connector {
+    min-width: 10px;
+  }
+
+  /* Responsive Modals */
+  .modal-overlay {
+    padding: 8px !important;
+  }
+
+  .modal-content,
+  .decision-gate-modal-content,
+  .backlog-modal-content,
+  .journal-modal-content,
+  .sprint-completion-modal {
+    width: 96vw !important;
+    max-width: 96vw !important;
+    max-height: 92vh !important;
+    padding: 16px !important;
+    margin: 8px auto !important;
+    overflow-y: auto !important;
+  }
+}
+
+/* Small Smartphone (<= 480px) */
+@media (max-width: 480px) {
+  .brand-title {
+    font-size: 14px;
+  }
+
+  .view-btn span {
+    display: inline;
+  }
+
+  .status-pill {
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+
+  .kanban-section {
+    grid-template-columns: 1fr;
+  }
+}

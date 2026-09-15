@@ -94,12 +94,14 @@ import { ChatInputDeck } from './chat/ChatInputDeck';
 
 export default function FocusRoomView({ 
   project, 
-  agents, 
-  tasks, 
-  liveStream, 
+  agents = [], 
+  tasks = [], 
+  liveStream = [], 
   consoleHistory,
   timelineEvents = [],
   sprints = [],
+  initialTab = 'mission-hub',
+  onTabChange,
   onRerunSprint,
   onBack, 
   onAgentClick, 
@@ -120,7 +122,27 @@ export default function FocusRoomView({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onBack]);
 
-  const [activeTab, setActiveTab] = useState('mission-hub');
+  const [activeTab, setActiveTab] = useState(() => {
+    const raw = initialTab || 'mission-hub';
+    return TAB_ALIASES[raw] || raw;
+  });
+
+  useEffect(() => {
+    if (initialTab) {
+      const normalized = TAB_ALIASES[initialTab] || initialTab;
+      if (normalized !== activeTab) {
+        setActiveTab(normalized);
+      }
+    }
+  }, [initialTab]);
+
+  const handleTabSelect = (tabId) => {
+    setActiveTab(tabId);
+    if (onTabChange) {
+      onTabChange(tabId);
+    }
+  };
+
   const [missionSubView, setMissionSubView] = useState('chat'); // 'chat' | 'timeline' | 'split'
   const [codeSubView, setCodeSubView] = useState('files'); // 'files' | 'git'
   const [sprintSubView, setSprintSubView] = useState('history'); // 'history' | 'tests'
@@ -608,16 +630,16 @@ export default function FocusRoomView({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <button className="view-btn" onClick={onBack}>
+      <div className="focus-room-header">
+        <button className="view-btn back-to-overview-btn" onClick={onBack}>
           <ArrowLeft size={16} />
           <span>Back to Overview</span>
         </button>
-        <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <span className="room-tag">PROJECT WORKSPACE</span>
-            <h2 style={{ fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)' }}>{project.name}</h2>
-          </div>
+        <div className="focus-header-meta">
+          <span className="room-tag">PROJECT WORKSPACE</span>
+          <h2 className="focus-header-title">{project.name}</h2>
+        </div>
+        <div className="focus-header-actions">
 
           <button
             className="view-btn"
@@ -711,15 +733,9 @@ export default function FocusRoomView({
       <SprintPipelineStepper agents={agents} sprints={sprints} />
 
       {/* Main Focus Room Layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: '20px' }}>
+      <div className="focus-room-layout">
         {/* Left column: Agent roster */}
-        <div style={{
-          background: 'var(--bg-surface)',
-          borderRadius: 'var(--radius-lg)',
-          padding: '16px',
-          border: '1px solid var(--border-subtle)',
-          height: 'fit-content'
-        }}>
+        <div className="focus-roster-column">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', color: 'var(--text-primary)', fontWeight: '600', fontSize: '13px' }}>
             <Users size={16} color="var(--primary)" />
             <span>Agent Team</span>
@@ -734,7 +750,7 @@ export default function FocusRoomView({
                   onClick={() => {
                     // Click agent → insert @mention in console
                     setConsoleInput(prev => prev ? prev : `@${ag.role} `);
-                    setActiveTab('team-console');
+                    handleTabSelect('mission-hub');
                   }}
                   style={{
                     display: 'flex',
@@ -805,7 +821,7 @@ export default function FocusRoomView({
                 <button
                   key={tab.id}
                   className={`view-btn ${isActive ? 'active' : ''}`}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabSelect(tab.id)}
                   style={{
                     fontSize: '12.5px',
                     padding: '7px 16px',
@@ -890,15 +906,9 @@ export default function FocusRoomView({
                 {missionSubView === 'timeline' ? (
                   <ActivityTimeline events={timelineEvents || []} />
                 ) : (
-                  <div style={{
-                    display: missionSubView === 'split' ? 'grid' : 'flex',
-                    gridTemplateColumns: missionSubView === 'split' ? '1fr 340px' : 'none',
-                    flexDirection: 'column',
-                    flex: 1,
-                    minHeight: '420px'
-                  }}>
+                  <div className={missionSubView === 'split' ? 'mission-split-container' : 'mission-flex-container'}>
                     {/* Chat Column */}
-                    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, borderRight: missionSubView === 'split' ? '1px solid var(--border-subtle)' : 'none' }}>
+                    <div className={`mission-chat-column ${missionSubView === 'split' ? 'is-split' : ''}`}>
                       {/* Message Thread Container */}
                       <div style={{
                         flex: 1,
