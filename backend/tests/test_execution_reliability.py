@@ -215,6 +215,16 @@ def test_runtime_api_returns_unavailable_without_mock_fallback(monkeypatch):
     assert not result['available']
 
 
+def test_dashboard_security_headers_are_restrictive():
+    from app.main import app
+    response = TestClient(app).get('/')
+    assert response.status_code == 200
+    policy = response.headers['content-security-policy']
+    assert "default-src 'self'" in policy
+    assert "'unsafe-eval'" not in policy
+    assert response.headers['x-content-type-options'] == 'nosniff'
+
+
 def test_temporary_workspace_allowed_and_system_symlink_rejected(tmp_path):
     inspector = WorkspaceInspector()
     assert inspector.validate_guardrails(str(tmp_path))[0]
@@ -259,6 +269,15 @@ def test_execution_plan_selects_scope_and_reviewer_fails_closed():
     game_plan = build_execution_plan('Build multiplayer vehicle lobby', '', {}, specialists)
     assert 'ThreeJsSpecialist' in game_plan['roles']
     assert 'Security' not in game_plan['roles']
+    echoed = (
+        '<execution_plan>{"roles":["ROLE"],"acceptance_criteria":["example"]}</execution_plan>\n'
+        '<execution_plan>{"roles":["BackendDev"],"acceptance_criteria":["API returns 200"]}</execution_plan>'
+    )
+    assert build_execution_plan('Repair API', echoed, {}, [])['acceptance_criteria'] == ['API returns 200']
+    invalid = build_execution_plan(
+        'Repair API', '<execution_plan>{"roles":["ROLE"],"acceptance_criteria":["example"]}</execution_plan>', {}, []
+    )
+    assert invalid['acceptance_criteria'][0].startswith('The requested behavior')
     assert parse_reviewer_verdict('Looks good')['verdict'] == 'BLOCKED'
     verdict = parse_reviewer_verdict(
         '<review_verdict>{"verdict":"CHANGES_REQUESTED","findings":["api.py:12"],"owners":["BackendDev"]}</review_verdict>'
@@ -285,6 +304,21 @@ def test_workspace_session_commits_or_discards_as_one_unit(tmp_path):
     (discarded.workspace / 'app.py').write_text('partial failure')
     discarded.close()
     assert (original / 'app.py').read_text() == 'after'
+
+
+def test_workspace_dependencies_are_mounted_only_for_verification(tmp_path):
+    original = tmp_path / 'project'
+    dependency = original / 'node_modules' / 'tool'
+    dependency.mkdir(parents=True)
+    (dependency / 'index.js').write_text('dependency')
+    session = WorkspaceSession(str(original))
+    mounted = session.workspace / 'node_modules'
+    assert not mounted.exists()
+    session.mount_dependencies()
+    assert mounted.is_symlink()
+    session.unmount_dependencies()
+    assert not mounted.exists()
+    session.close()
 
 
 @pytest.mark.asyncio
@@ -332,3 +366,67 @@ async def test_qa_and_designer_are_read_only_cli_roles(monkeypatch, tmp_path):
     await runner.dispatch_agent_task('p', 'Designer', 'Design', str(tmp_path))
     await runner.dispatch_agent_task('p', 'QATester', 'Verify', str(tmp_path))
     assert seen == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_documentation_only_sprint_can_pass_without_test_suite(tmp_path):
+    store = StateStore(str(tmp_path / 'state.db'))
+    pm = ProjectManager(store)
+    workspace = tmp_path / 'docs'
+    workspace.mkdir()
+    (workspace / 'README.md').write_text('old\n')
+    pm.register_project('docs', 'Docs', str(workspace), auto_pilot=True)
+    runner = AgentRunner(use_mock=False)
+
+    async def fake_dispatch(**kwargs):
+        role = kwargs['role']
+        if role == 'DocWriter':
+            Path(kwargs['workspace_path'], 'README.md').write_text('updated\n')
+        response = (
+            '<review_verdict>{"verdict":"APPROVED","findings":[],"owners":[]}</review_verdict>'
+            if role == 'Reviewer' else 'completed'
+        )
+        return {'status': 'SUCCESS', 'role': role, 'response': response, 'tokens_used': 1, 'backend_used': 'test'}
+
+    runner.dispatch_agent_task = fake_dispatch
+    result = await Orchestrator(store, pm, runner).execute_pm_directive('docs', 'Update README documentation')
+    assert result['status'] == 'COMPLETED'
+    assert result['selected_roles'] == ['DocWriter', 'QATester', 'Reviewer']
+    assert (workspace / 'README.md').read_text() == 'updated\n'
+
+
+@pytest.mark.asyncio
+async def test_reviewer_changes_requested_gets_one_repair_pass(tmp_path):
+    store = StateStore(str(tmp_path / 'state.db'))
+    pm = ProjectManager(store)
+    workspace = tmp_path / 'review-repair'
+    workspace.mkdir()
+    (workspace / 'requirements.txt').write_text('pytest')
+    (workspace / 'test_ok.py').write_text('def test_ok():\n    assert True\n')
+    pm.register_project('repair', 'Repair', str(workspace), auto_pilot=True)
+    runner = AgentRunner(use_mock=False)
+    reviews = 0
+
+    async def fake_dispatch(**kwargs):
+        nonlocal reviews
+        role = kwargs['role']
+        prompt = kwargs['prompt']
+        if role == 'BackendDev':
+            value = 'fixed = True\n' if 'Reviewer Findings' in prompt else 'fixed = False\n'
+            Path(kwargs['workspace_path'], 'feature.py').write_text(value)
+        if role == 'Reviewer':
+            reviews += 1
+            verdict = 'CHANGES_REQUESTED' if reviews == 1 else 'APPROVED'
+            response = (
+                f'<review_verdict>{{"verdict":"{verdict}","findings":["feature.py needs fixed=True"],'
+                '"owners":["BackendDev"]}</review_verdict>'
+            )
+        else:
+            response = 'completed'
+        return {'status': 'SUCCESS', 'role': role, 'response': response, 'tokens_used': 1, 'backend_used': 'test'}
+
+    runner.dispatch_agent_task = fake_dispatch
+    result = await Orchestrator(store, pm, runner).execute_pm_directive('repair', 'Repair backend API')
+    assert result['status'] == 'COMPLETED'
+    assert reviews == 2
+    assert (workspace / 'feature.py').read_text() == 'fixed = True\n'

@@ -17,7 +17,8 @@ class StateStore:
 
     @contextmanager
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout = 30000")
         try:
             yield conn
         finally:
@@ -25,6 +26,7 @@ class StateStore:
 
     def _init_db(self):
         with self._get_conn() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT PRIMARY KEY,
@@ -472,6 +474,11 @@ class StateStore:
             conn.execute("DELETE FROM approvals WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM sprints WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM directive_queue WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM console_messages WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM backlog_items WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM project_memories WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM agent_activity_logs WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM agent_sprint_logs WHERE project_id = ?", (project_id,))
             conn.commit()
 
     def record_sprint(self, sprint: SprintRecord) -> SprintRecord:
@@ -597,7 +604,10 @@ class StateStore:
     def get_queue(self, project_id: str) -> List[QueueItem]:
         with self._get_conn() as conn:
             cur = conn.execute(
-                "SELECT queue_id, project_id, directive, status, position, created_at, priority FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' ORDER BY position ASC",
+                """SELECT queue_id, project_id, directive, status, position, created_at, priority
+                   FROM directive_queue WHERE project_id = ? AND status = 'QUEUED'
+                   ORDER BY CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
+                            position ASC, created_at ASC""",
                 (project_id,)
             )
             return [
@@ -610,6 +620,35 @@ class StateStore:
             conn.execute("UPDATE directive_queue SET status = ? WHERE queue_id = ?", (status, queue_id))
             conn.commit()
 
+    def claim_queue_item(self, queue_id: str) -> bool:
+        """Atomically move one queued directive to RUNNING."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """UPDATE directive_queue SET status = 'RUNNING'
+                   WHERE queue_id = ? AND status = 'QUEUED'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM directive_queue active
+                         WHERE active.project_id = directive_queue.project_id
+                           AND active.status = 'RUNNING'
+                     )""",
+                (queue_id,),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+
+    def get_queue_item(self, queue_id: str) -> Optional[QueueItem]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT queue_id, project_id, directive, status, position, created_at, priority FROM directive_queue WHERE queue_id = ?",
+                (queue_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return QueueItem(
+                queue_id=row[0], project_id=row[1], directive=row[2], status=row[3],
+                position=row[4], created_at=row[5], priority=row[6] or "NORMAL",
+            )
+
     def cancel_queue_item(self, queue_id: str) -> bool:
         with self._get_conn() as conn:
             cur = conn.execute("UPDATE directive_queue SET status = 'CANCELLED' WHERE queue_id = ? AND status = 'QUEUED'", (queue_id,))
@@ -619,7 +658,11 @@ class StateStore:
     def get_all_queue_items(self) -> List[QueueItem]:
         with self._get_conn() as conn:
             cur = conn.execute(
-                "SELECT queue_id, project_id, directive, status, position, created_at, priority FROM directive_queue WHERE status IN ('QUEUED', 'RUNNING') ORDER BY created_at ASC"
+                """SELECT queue_id, project_id, directive, status, position, created_at, priority
+                   FROM directive_queue WHERE status IN ('QUEUED', 'RUNNING')
+                   ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END,
+                            CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
+                            created_at ASC"""
             )
             return [
                 QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5], priority=r[6] or "NORMAL")
@@ -635,20 +678,20 @@ class StateStore:
     def reorder_queue_item(self, queue_id: str, direction: str) -> bool:
         """Move item 'up' or 'down' relative to its peers."""
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT queue_id, project_id, position FROM directive_queue WHERE queue_id = ?", (queue_id,))
+            cur = conn.execute("SELECT queue_id, project_id, position, priority, status FROM directive_queue WHERE queue_id = ?", (queue_id,))
             target = cur.fetchone()
-            if not target:
+            if not target or target[4] != "QUEUED" or direction not in {"up", "down"}:
                 return False
-            _, project_id, current_pos = target
+            _, project_id, current_pos, priority, _status = target
             if direction == "up":
                 cur = conn.execute(
-                    "SELECT queue_id, position FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' AND position < ? ORDER BY position DESC LIMIT 1",
-                    (project_id, current_pos)
+                    "SELECT queue_id, position FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' AND priority = ? AND position < ? ORDER BY position DESC LIMIT 1",
+                    (project_id, priority, current_pos)
                 )
             else:
                 cur = conn.execute(
-                    "SELECT queue_id, position FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' AND position > ? ORDER BY position ASC LIMIT 1",
-                    (project_id, current_pos)
+                    "SELECT queue_id, position FROM directive_queue WHERE project_id = ? AND status = 'QUEUED' AND priority = ? AND position > ? ORDER BY position ASC LIMIT 1",
+                    (project_id, priority, current_pos)
                 )
             other = cur.fetchone()
             if not other:

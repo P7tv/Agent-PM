@@ -101,10 +101,10 @@ class CreateMemoryRequest(BaseModel):
     category: Optional[str] = "architecture"
 
 class QueuePriorityRequest(BaseModel):
-    priority: str
+    priority: Literal["URGENT", "HIGH", "NORMAL", "LOW"]
 
 class QueueReorderRequest(BaseModel):
-    direction: str  # "up" or "down"
+    direction: Literal["up", "down"]
 
 class GitRemoteRequest(BaseModel):
     name: str = "origin"
@@ -158,6 +158,7 @@ async def delete_project(project_id: str):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    await sprint_queue.stop_project(project_id)
     store.delete_project(project_id)
     await hub.broadcast("PROJECT_DELETED", {"project_id": project_id})
     return {"status": "DELETED", "project_id": project_id}
@@ -264,6 +265,9 @@ async def cancel_queue_directive(project_id: str, queue_id: str):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    item = store.get_queue_item(queue_id)
+    if not item or item.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Queue item not found for this project")
     cancelled = sprint_queue.cancel_item(queue_id)
     if not cancelled:
         raise HTTPException(status_code=404, detail="Queue item not found or already running")
@@ -316,6 +320,9 @@ async def set_queue_item_priority(project_id: str, queue_id: str, req: QueuePrio
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    item = store.get_queue_item(queue_id)
+    if not item or item.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Queue item not found for this project")
     updated = store.set_queue_priority(queue_id, req.priority)
     if not updated:
         raise HTTPException(status_code=404, detail="Queue item not found")
@@ -327,6 +334,9 @@ async def reorder_queue_item(project_id: str, queue_id: str, req: QueueReorderRe
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    item = store.get_queue_item(queue_id)
+    if not item or item.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Queue item not found for this project")
     reordered = store.reorder_queue_item(queue_id, req.direction)
     if not reordered:
         raise HTTPException(status_code=400, detail="Cannot move item in that direction")

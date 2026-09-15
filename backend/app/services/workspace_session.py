@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import difflib
 import os
 from pathlib import Path
 import shutil
@@ -69,6 +70,7 @@ class WorkspaceSession:
         self.original = Path(original).resolve()
         self.temp_root = Path(tempfile.mkdtemp(prefix="pm-sprint-"))
         self.workspace = self.temp_root / "workspace"
+        self._dependency_sources: Dict[str, Path] = {}
         self._copy_source()
         self.original_baseline = snapshot_workspace(self.original)
         self.staged_baseline = snapshot_workspace(self.workspace)
@@ -84,26 +86,67 @@ class WorkspaceSession:
 
     def _copy_source(self) -> None:
         shutil.copytree(self.original, self.workspace, symlinks=True, ignore=self._ignore)
-        # Tests and builds can reuse installed dependencies. They remain outside
-        # the content snapshot and are never copied back into the project.
+        # Record dependency trees but do not expose them to implementation
+        # agents. They are mounted only while deterministic checks run.
         for current, dirs, _files in os.walk(self.original, followlinks=False):
             current_path = Path(current)
             for name in list(dirs):
                 if name in DEPENDENCY_DIRS:
                     source = current_path / name
                     relative = source.relative_to(self.original)
-                    target = self.workspace / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        target.symlink_to(source, target_is_directory=True)
-                    except FileExistsError:
-                        pass
+                    self._dependency_sources[relative.as_posix()] = source
                     dirs.remove(name)
                 elif name in IGNORED_NAMES or (current_path / name).is_symlink():
                     dirs.remove(name)
 
     def changes(self) -> Dict[str, list[str]]:
         return changed_paths(self.staged_baseline, snapshot_workspace(self.workspace))
+
+    def mount_dependencies(self) -> None:
+        for relative, source in self._dependency_sources.items():
+            target = self.workspace / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists() and not target.is_symlink():
+                target.symlink_to(source, target_is_directory=True)
+
+    def unmount_dependencies(self) -> None:
+        for relative, source in self._dependency_sources.items():
+            target = self.workspace / relative
+            if target.is_symlink():
+                try:
+                    if target.resolve() == source.resolve():
+                        target.unlink()
+                except OSError:
+                    target.unlink(missing_ok=True)
+
+    def review_diff(self, max_chars: int = 30000) -> str:
+        """Create a bounded unified diff for the read-only reviewer."""
+        chunks = []
+        for rel in flatten_changes(self.changes()):
+            before_path = self.original / rel
+            after_path = self.workspace / rel
+
+            def read_text(path: Path) -> list[str]:
+                if not path.is_file() or path.is_symlink():
+                    return []
+                try:
+                    raw = path.read_bytes()
+                    if b"\x00" in raw:
+                        return ["<binary file>\n"]
+                    return raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+                except OSError:
+                    return []
+
+            before = read_text(before_path)
+            after = read_text(after_path)
+            diff = "".join(difflib.unified_diff(
+                before, after, fromfile=f"a/{rel}", tofile=f"b/{rel}", n=3,
+            ))
+            chunks.append(diff or f"Changed binary/symlink: {rel}\n")
+            if sum(len(chunk) for chunk in chunks) >= max_chars:
+                chunks.append("\n... diff truncated ...\n")
+                break
+        return "".join(chunks)[:max_chars]
 
     def commit(self) -> Dict[str, list[str]]:
         changes = self.changes()
@@ -159,4 +202,3 @@ class WorkspaceSession:
 
     def close(self) -> None:
         shutil.rmtree(self.temp_root, ignore_errors=True)
-

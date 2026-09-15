@@ -231,53 +231,54 @@ function AppContent() {
 
   const fetchGlobalQueue = async () => {
     try {
-      const res = await fetch('/api/queue/all');
-      const items = await res.json();
-      setGlobalQueue(items);
+      setGlobalQueue(await requestJson('/api/queue/all'));
     } catch (e) {
+      toast.error(`โหลดคิวไม่สำเร็จ: ${e.message}`);
       console.error('Error loading global queue:', e);
     }
   };
 
   const handleCancelQueueItem = async (queueId) => {
     try {
-      await fetch(`/api/queue/${queueId}`, { method: 'DELETE' });
-      fetchGlobalQueue();
+      await requestJson(`/api/queue/${queueId}`, { method: 'DELETE' });
+      await fetchGlobalQueue();
     } catch (e) {
+      toast.error(`ยกเลิกคิวไม่สำเร็จ: ${e.message}`);
       console.error('Error cancelling queue item:', e);
     }
   };
 
   const handleSetQueuePriority = async (queueId, priority) => {
     try {
-      await fetch(`/api/queue/${queueId}/priority`, {
+      await requestJson(`/api/queue/${queueId}/priority`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ priority })
       });
-      fetchGlobalQueue();
+      await fetchGlobalQueue();
     } catch (e) {
+      toast.error(`เปลี่ยน priority ไม่สำเร็จ: ${e.message}`);
       console.error('Error updating queue priority:', e);
     }
   };
 
   const handleReorderQueueItem = async (queueId, direction) => {
     try {
-      await fetch(`/api/queue/${queueId}/reorder`, {
+      await requestJson(`/api/queue/${queueId}/reorder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction })
       });
-      fetchGlobalQueue();
+      await fetchGlobalQueue();
     } catch (e) {
+      toast.error(`จัดลำดับคิวไม่สำเร็จ: ${e.message}`);
       console.error('Error reordering queue item:', e);
     }
   };
 
   const fetchSprints = async (projId) => {
     try {
-      const res = await fetch(`/api/projects/${projId}/sprints`);
-      const sprints = await res.json();
+      const sprints = await requestJson(`/api/projects/${projId}/sprints`);
       setSprintsByProject((prev) => ({ ...prev, [projId]: sprints }));
     } catch (e) {
       console.error(`Error loading sprints for ${projId}:`, e);
@@ -286,21 +287,18 @@ function AppContent() {
 
   const fetchProjectDetails = async (projId) => {
     try {
-      const [agentsRes, tasksRes, approvalsRes] = await Promise.all([
-        fetch(`/api/projects/${projId}/agents`),
-        fetch(`/api/projects/${projId}/tasks`),
-        fetch(`/api/projects/${projId}/approvals`)
+      const [agents, tasks, approvals] = await Promise.all([
+        requestJson(`/api/projects/${projId}/agents`),
+        requestJson(`/api/projects/${projId}/tasks`),
+        requestJson(`/api/projects/${projId}/approvals`)
       ]);
-
-      const agents = await agentsRes.json();
-      const tasks = await tasksRes.json();
-      const approvals = await approvalsRes.json();
 
       setAgentStates((prev) => ({ ...prev, [projId]: agents }));
       setTasksByProject((prev) => ({ ...prev, [projId]: tasks }));
-      if (approvals && approvals.length > 0) {
-        setActiveApproval(approvals[0]);
-      }
+      setActiveApproval((current) => {
+        if (approvals?.length) return current && current.project_id !== projId ? current : approvals[0];
+        return current?.project_id === projId ? null : current;
+      });
     } catch (e) {
       console.error(`Error loading details for ${projId}:`, e);
     }
@@ -308,8 +306,7 @@ function AppContent() {
 
   const fetchConsoleHistory = async (projId) => {
     try {
-      const res = await fetch(`/api/projects/${projId}/console/history`);
-      const history = await res.json();
+      const history = await requestJson(`/api/projects/${projId}/console/history`);
       setConsoleHistories((prev) => ({ ...prev, [projId]: history }));
     } catch (e) {
       console.error(`Error loading console history for ${projId}:`, e);
@@ -376,15 +373,14 @@ function AppContent() {
               return { ...prev, [projId]: agents };
             });
             if (evType === 'AGENT_STATE_UPDATE') {
-              fetch(`/api/projects/${projId}/tasks`).then(r => r.json()).then(tasks => {
+              requestJson(`/api/projects/${projId}/tasks`).then(tasks => {
                 if (Array.isArray(tasks)) setTasksByProject(prev => ({ ...prev, [projId]: tasks }));
               }).catch(console.error);
             }
           } else if (['AGENT_ROSTER_UPDATED', 'AGENT_DELETED'].includes(evType)) {
             fetchProjectDetails(projId);
           } else if (evType === 'TASKS_UPDATED') {
-            fetch(`/api/projects/${projId}/tasks`)
-              .then((r) => r.json())
+            requestJson(`/api/projects/${projId}/tasks`)
               .then((tasks) => {
                 setTasksByProject((prev) => ({ ...prev, [projId]: tasks }));
               });
@@ -482,11 +478,11 @@ function AppContent() {
       body: JSON.stringify({ decision })
     });
     setActiveApproval(null);
-    fetchProjectDetails(activeApproval.project_id);
+    fetchData();
   };
 
   const handleSendWhisper = async (projectId, role, message) => {
-    await fetch(`/api/projects/${projectId}/whisper`, {
+    await requestJson(`/api/projects/${projectId}/whisper`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role, message })

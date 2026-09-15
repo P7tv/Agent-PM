@@ -117,8 +117,8 @@ PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 2. ระบบเลือกเฉพาะ **Designer / Frontend / Backend / specialist / DocWriter** ที่เกี่ยวข้องกับคำสั่งนั้น
 3. Agent ลงมือใน **staged workspace** และรายงานหลักฐานเป็นรายชื่อไฟล์ที่เพิ่ม แก้ หรือลบ
 4. เอกสารที่เกี่ยวข้องจะอัปเดตก่อนตรวจคุณภาพ
-5. **QA แบบ read-only** รัน test, typecheck/check, lint และ build ที่ตรวจพบ หากล้มเหลวจะส่งผลพร้อม path กลับไปยังเจ้าของงานและลองแก้ได้สูงสุด 3 รอบ
-6. **Reviewer แบบ read-only** ตรวจ acceptance criteria, ไฟล์ที่เปลี่ยน และผล QA โดยต้องคืน verdict ที่ระบบอ่านได้ งานจะถูก block หากไม่อนุมัติ
+5. **QA แบบ read-only** รัน test, typecheck/check, lint และ build ที่ตรวจพบ หากล้มเหลวจะส่งผลพร้อม path กลับไปยังเจ้าของงานและลองแก้ได้สูงสุด 3 รอบ งานเอกสารล้วนสามารถผ่านพร้อมสถานะ `NOT_RUN` ได้
+6. **Reviewer แบบ read-only** ตรวจ acceptance criteria, unified diff และผล QA โดยต้องคืน verdict ที่ระบบอ่านได้ หากขอแก้ ระบบให้เจ้าของงานแก้และตรวจซ้ำได้อีก 1 รอบก่อน block
 7. ระบบรัน verification รอบสุดท้าย แล้วจึงนำไฟล์จาก staged workspace กลับเข้าโปรเจกต์พร้อมกัน หาก sprint ล้มเหลวไฟล์ครึ่งงานจะไม่ถูกนำมาใช้
 
 ### Runtime และคุณภาพงาน
@@ -131,6 +131,7 @@ PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 - QA ตรวจ process exit code รองรับ npm scripts (`test`, `typecheck`, `check`, `lint`, `build`), pytest, Go และ Cargo ทั้งที่ root และ package ชั้นแรกของ monorepo หากไม่พบ check จะแจ้ง `NOT_RUN` และไม่ถือว่าผ่าน
 - Auto-Pilot จะหยุดทันทีเมื่อ QA ยังไม่ผ่านหลังครบจำนวนครั้ง ส่วน Gate Mode จะเปิดให้ PM ตัดสินใจรับความเสี่ยง ผลทดสอบอัตโนมัติยังไม่แทนการตรวจ UX ด้วยมนุษย์
 - Directive ที่ค้างใน queue จะกลับมาทำต่ออัตโนมัติหลัง backend restart ส่วน sprint ที่กำลังรันตอน process หยุดจะถูกปิดเป็น failed เพื่อไม่รายงานสถานะค้าง
+- Queue เรียง `URGENT → HIGH → NORMAL → LOW`; การเลื่อนขึ้นลงทำงานภายใน priority เดียวกัน
 - CLI ลงมือทำงานด้วยสิทธิ์ของผู้ใช้ในเครื่องตามการตั้งค่าเดิมของแอป ใช้กับ workspace ที่ตั้งใจให้ agent แก้ไข
 
 หลังแก้ frontend ให้รัน `cd frontend && npm run build` แล้ว restart `python start_dashboard.py` เพื่อใช้ backend เวอร์ชันใหม่ด้วย

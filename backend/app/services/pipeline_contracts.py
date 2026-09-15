@@ -15,14 +15,17 @@ def _words(value: str) -> set[str]:
 
 
 def _extract_json_block(text: str, tag: str) -> Dict[str, Any] | None:
-    match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text or "", re.I | re.S)
-    if not match:
-        return None
-    try:
-        value = json.loads(match.group(1))
-    except (TypeError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
+    # Read from the end so an agent that repeats the prompt example before its
+    # answer does not accidentally make the example the active contract.
+    matches = re.findall(rf"<{tag}>\s*(.*?)\s*</{tag}>", text or "", re.I | re.S)
+    for candidate in reversed(matches):
+        try:
+            value = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 def build_execution_plan(
@@ -50,6 +53,9 @@ def build_execution_plan(
         raw_criteria = structured.get("acceptance_criteria", [])
         if isinstance(raw_criteria, list):
             criteria = [str(item).strip() for item in raw_criteria if str(item).strip()][:12]
+        if not roles:
+            # Invalid/example roles mean the whole contract is unusable.
+            criteria = []
 
     if not roles:
         text = " ".join(
@@ -159,7 +165,8 @@ def parse_reviewer_verdict(text: str) -> Dict[str, Any]:
 
 def choose_fix_owner(report: str, available_roles: Iterable[str]) -> str:
     """Route a failure using file paths first, then domain language."""
-    available = set(available_roles)
+    ordered = list(dict.fromkeys(available_roles))
+    available = set(ordered)
     paths = re.findall(r"(?:^|\s)([\w./-]+\.(?:tsx?|jsx?|css|html|py|go|rs|sql))(?::\d+)?", report or "", re.I)
     frontend_path = any(re.search(r"(?:frontend|client|web|src/components|src/pages)|\.(?:tsx?|jsx?|css|html)$", p, re.I) for p in paths)
     backend_path = any(re.search(r"(?:backend|server|api|routes?|models?)|\.(?:py|go|rs|sql)$", p, re.I) for p in paths)
@@ -174,4 +181,4 @@ def choose_fix_owner(report: str, available_roles: Iterable[str]) -> str:
         return "BackendDev"
     if "FrontendDev" in available:
         return "FrontendDev"
-    return next(iter(available), "BackendDev")
+    return ordered[0] if ordered else "BackendDev"

@@ -23,6 +23,14 @@ class SprintQueue:
     def cancel_item(self, queue_id: str) -> bool:
         return self.store.cancel_queue_item(queue_id)
 
+    async def stop_project(self, project_id: str) -> None:
+        """Stop an active drain before its project rows are deleted."""
+        self.orchestrator.abort_pipeline(project_id)
+        worker = self._workers.pop(project_id, None)
+        if worker and not worker.done():
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
     def resume_pending(self) -> int:
         """Restart drain workers for directives that survived a server restart."""
         resumed = 0
@@ -38,38 +46,44 @@ class SprintQueue:
             self._workers[project_id] = asyncio.create_task(self._drain(project_id))
 
     async def _drain(self, project_id: str):
-        while True:
-            queue = self.store.get_queue(project_id)
-            if not queue:
-                break
-            item = queue[0]
-            final_status = "FAILED"
-            error = None
-            self.store.update_queue_item(item.queue_id, "RUNNING")
-            if self.broadcast_fn:
-                await self.broadcast_fn("QUEUE_ITEM_STARTED", {"project_id": project_id, "queue_id": item.queue_id, "directive": item.directive})
-            try:
-                res = await self.orchestrator.execute_pm_directive(
-                    project_id=project_id,
-                    directive=item.directive,
-                    event_callback=self.broadcast_fn
-                )
-                final_status = res.get("status", "COMPLETED") if res else "COMPLETED"
-                if final_status in ["COMPLETED", "SUCCESS"]:
-                    self.store.update_queue_item(item.queue_id, "COMPLETED")
-                elif final_status in ["ABORTED", "REJECTED", "HALTED_QA_FAILURE"]:
-                    self.store.update_queue_item(item.queue_id, "CANCELLED")
-                else:
-                    self.store.update_queue_item(item.queue_id, "FAILED")
-            except Exception as exc:
+        try:
+            while True:
+                queue = self.store.get_queue(project_id)
+                if not queue:
+                    break
+                item = queue[0]
                 final_status = "FAILED"
-                error = str(exc)
-                self.store.update_queue_item(item.queue_id, "FAILED")
-            if self.broadcast_fn:
-                await self.broadcast_fn("QUEUE_ITEM_FINISHED", {
-                    "project_id": project_id,
-                    "queue_id": item.queue_id,
-                    "status": final_status,
-                    "error": error,
-                })
-                await self.broadcast_fn("QUEUE_UPDATED", {"project_id": project_id})
+                error = None
+                if not self.store.claim_queue_item(item.queue_id):
+                    break
+                if self.broadcast_fn:
+                    await self.broadcast_fn("QUEUE_ITEM_STARTED", {"project_id": project_id, "queue_id": item.queue_id, "directive": item.directive})
+                try:
+                    res = await self.orchestrator.execute_pm_directive(
+                        project_id=project_id,
+                        directive=item.directive,
+                        event_callback=self.broadcast_fn
+                    )
+                    final_status = res.get("status", "COMPLETED") if res else "COMPLETED"
+                    if final_status in ["COMPLETED", "SUCCESS"]:
+                        self.store.update_queue_item(item.queue_id, "COMPLETED")
+                    elif final_status in ["ABORTED", "REJECTED", "HALTED_QA_FAILURE"]:
+                        self.store.update_queue_item(item.queue_id, "CANCELLED")
+                    else:
+                        self.store.update_queue_item(item.queue_id, "FAILED")
+                except Exception as exc:
+                    final_status = "FAILED"
+                    error = str(exc)
+                    self.store.update_queue_item(item.queue_id, "FAILED")
+                if self.broadcast_fn:
+                    await self.broadcast_fn("QUEUE_ITEM_FINISHED", {
+                        "project_id": project_id,
+                        "queue_id": item.queue_id,
+                        "status": final_status,
+                        "error": error,
+                    })
+                    await self.broadcast_fn("QUEUE_UPDATED", {"project_id": project_id})
+        finally:
+            current = self._workers.get(project_id)
+            if current is asyncio.current_task():
+                self._workers.pop(project_id, None)

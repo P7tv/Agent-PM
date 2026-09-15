@@ -1,16 +1,18 @@
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from app.api.routes import router, sprint_queue
+from app.api import routes as routes_module
+from app.api.routes import router
 from app.api.websocket_hub import hub
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Resume durable queued directives whenever the API process starts."""
-    sprint_queue.resume_pending()
+    routes_module.sprint_queue.resume_pending()
     yield
 
 
@@ -18,7 +20,10 @@ app = FastAPI(title="Virtual AI Office PM Dashboard", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8000", "http://localhost:8000",
+        "http://127.0.0.1:5173", "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,11 +33,16 @@ app.add_middleware(
 async def add_security_headers(request, call_next):
     response = await call_next(request)
     response.headers["Content-Security-Policy"] = (
-        "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; "
-        "script-src * 'unsafe-inline' 'unsafe-eval' blob: data: chrome-extension:; "
-        "style-src * 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src * data: https://fonts.gstatic.com;"
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self' ws: wss:; "
+        "object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
     )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
 
 app.include_router(router)
@@ -54,7 +64,12 @@ if os.path.exists(frontend_dist):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        file_path = os.path.join(frontend_dist, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
+        dist_root = Path(frontend_dist).resolve()
+        file_path = (dist_root / full_path).resolve()
+        try:
+            file_path.relative_to(dist_root)
+        except ValueError:
+            return FileResponse(dist_root / "index.html")
+        if file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(os.path.join(frontend_dist, "index.html"))

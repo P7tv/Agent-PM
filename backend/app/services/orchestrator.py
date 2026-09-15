@@ -103,7 +103,7 @@ class Orchestrator:
             if project_id in self._aborted_projects:
                 raise RuntimeError("Sprint aborted by PM")
             require_changes = kwargs.pop("require_changes", False)
-            before = snapshot_workspace(kwargs["workspace_path"]) if require_changes and not self.runner.use_mock else None
+            before = await asyncio.to_thread(snapshot_workspace, kwargs["workspace_path"]) if require_changes and not self.runner.use_mock else None
             if require_changes:
                 kwargs["prompt"] += (
                     "\n\nEvidence contract: make the smallest necessary workspace edits and report exact changed paths. "
@@ -129,7 +129,7 @@ class Orchestrator:
                 await update_agent(kwargs["role"], "BLOCKED", error)
                 raise RuntimeError(f"{kwargs['role']}: {error}")
             if before is not None:
-                after = snapshot_workspace(kwargs["workspace_path"])
+                after = await asyncio.to_thread(snapshot_workspace, kwargs["workspace_path"])
                 evidence = changed_paths(before, after)
                 paths = flatten_changes(evidence)
                 result["changed_files"] = paths
@@ -156,6 +156,15 @@ class Orchestrator:
                     "thought": thought,
                     "last_tool_call": tool
                 })
+
+        async def run_verification() -> Dict[str, Any]:
+            if workspace_session is not None:
+                await asyncio.to_thread(workspace_session.mount_dependencies)
+            try:
+                return await verify_workspace(execution_workspace)
+            finally:
+                if workspace_session is not None:
+                    await asyncio.to_thread(workspace_session.unmount_dependencies)
 
         # Initialize Sprint tracking
         sprint_id = f"sprint-{uuid.uuid4().hex[:8]}"
@@ -271,7 +280,7 @@ class Orchestrator:
                     "role": "TechLead",
                     "message": "กำลังสร้าง staged workspace เพื่อป้องกันไฟล์ครึ่งงาน",
                 })
-                workspace_session = WorkspaceSession(workspace)
+                workspace_session = await asyncio.to_thread(WorkspaceSession, workspace)
                 execution_workspace = str(workspace_session.workspace)
 
             # Build shared sprint context (Team Blackboard)
@@ -366,6 +375,8 @@ class Orchestrator:
             custom_agents = [a for a in all_agents if a.role not in standard_roles]
             execution_plan = build_execution_plan(directive, arch_plan, meta, custom_agents)
             selected_roles = execution_plan["roles"]
+            code_roles = [role for role in selected_roles if role not in {"Designer", "DocWriter"}]
+            verification_required = bool(code_roles)
             sprint_context["execution_plan"] = execution_plan
             sprint_context["acceptance_criteria"] = "\n".join(
                 f"- {item}" for item in execution_plan["acceptance_criteria"]
@@ -720,8 +731,13 @@ class Orchestrator:
                 else:
                     await update_agent("QATester", "TESTING", "กำลังตรวจผลด้วยชุดทดสอบจริง")
                     await event_callback("AGENT_PROGRESS", {"project_id": project_id, "role": "QATester", "message": "กำลังรันชุดทดสอบจริงและตรวจ exit code"})
-                    verification = await verify_workspace(execution_workspace)
-                    qa_failed = verification["status"] != "PASSED"
+                    verification = await run_verification()
+                    aborted = await check_and_handle_abort()
+                    if aborted:
+                        return aborted
+                    qa_failed = verification["status"] != "PASSED" and not (
+                        verification["status"] == "NOT_RUN" and not verification_required
+                    )
                     checks_summary = ", ".join(
                         f"{check['name']}={check['status']}" for check in verification.get("checks", [])
                     ) or "no checks discovered"
@@ -735,7 +751,7 @@ class Orchestrator:
 
                 if qa_failed and attempt < max_retries:
                     qa_report = qa_res.get("response", "")
-                    repair_roles = [role for role in ("FrontendDev", "BackendDev") if role in task_by_role]
+                    repair_roles = [role for role in code_roles if role in task_by_role]
                     if not repair_roles:
                         break
                     fix_role = choose_fix_owner(qa_report, repair_roles)
@@ -848,8 +864,9 @@ class Orchestrator:
                 return aborted
     
             # 5. Reviewer signs off with full sprint blackboard
-            staged_evidence = workspace_session.changes() if workspace_session is not None else {"added": [], "modified": [], "deleted": []}
+            staged_evidence = await asyncio.to_thread(workspace_session.changes) if workspace_session is not None else {"added": [], "modified": [], "deleted": []}
             staged_paths = flatten_changes(staged_evidence)
+            staged_diff = await asyncio.to_thread(workspace_session.review_diff) if workspace_session is not None else "Unavailable in simulation"
             self.store.update_task_status(t_rev.task_id, "IN_PROGRESS")
             await update_agent("Reviewer", "REVIEWING", "Auditing security, diff quality, and writing release summary")
             rev_prompt = (
@@ -861,6 +878,7 @@ class Orchestrator:
                 f"Specialist Specifications:\n{sprint_context.get('specialist_specs', '')[:1000]}\n\n"
                 f"QA Test Results:\n{qa_res.get('response', '')[:1000]}\n\n"
                 f"Changed Files ({len(staged_paths)}):\n" + "\n".join(f"- {path}" for path in staged_paths[:200]) + "\n\n"
+                f"Unified Diff (bounded):\n{staged_diff}\n\n"
                 "Task for Reviewer: Inspect the actual workspace and diff, verify every acceptance criterion, "
                 "audit security and maintainability, and write release notes. Finish with exactly one block:\n"
                 '<review_verdict>{"verdict":"APPROVED|CHANGES_REQUESTED|BLOCKED",'
@@ -879,6 +897,74 @@ class Orchestrator:
 
             record_res(rev_res, role="Reviewer", duration=time.time() - t0_rev_res)
             verdict = {"verdict": "APPROVED", "findings": [], "owners": []} if self.runner.use_mock else parse_reviewer_verdict(rev_res.get("response", ""))
+            await event_callback("AGENT_RESPONSE", {
+                "project_id": project_id, "sprint_id": sprint_id, "role": "Reviewer",
+                "step_label": "Code Review 1", "response": rev_res.get("response", ""),
+            })
+
+            # One bounded repair pass turns actionable review feedback into a
+            # fix while preserving a hard gate for BLOCKED or malformed output.
+            if verdict["verdict"] == "CHANGES_REQUESTED":
+                findings = "; ".join(str(item) for item in verdict.get("findings", [])) or "Reviewer requested changes"
+                writer_roles = [role for role in selected_roles if role != "Designer" and role in task_by_role]
+                requested_owners = [role for role in verdict.get("owners", []) if role in writer_roles]
+                if not requested_owners and writer_roles:
+                    requested_owners = [choose_fix_owner(findings, writer_roles)]
+                if not requested_owners:
+                    raise RuntimeError(f"Reviewer CHANGES_REQUESTED without an available owner: {findings}")
+
+                for owner in list(dict.fromkeys(requested_owners))[:3]:
+                    await update_agent(owner, "WORKING", "Applying reviewer feedback")
+                    repair_res = await dispatch(
+                        project_id=project_id,
+                        role=owner,
+                        prompt=(
+                            f"Sprint Directive: {directive}\n\nReviewer Findings:\n{findings}\n\n"
+                            "Fix only these findings, add or update focused tests when applicable, and report the exact files changed."
+                        ),
+                        workspace_path=execution_workspace,
+                        project_context=sprint_context,
+                        event_callback=event_callback,
+                        require_changes=True,
+                    )
+                    record_res(repair_res, role=owner)
+                    self.store.update_task_result(
+                        task_by_role[owner].task_id,
+                        task_output(repair_res, f"{owner} reviewer repair applied"),
+                        status="DONE",
+                    )
+                    await update_agent(owner, "DONE", "Reviewer feedback applied")
+
+                review_verification = await run_verification() if not self.runner.use_mock else {"status": "PASSED", "checks": []}
+                aborted = await check_and_handle_abort()
+                if aborted:
+                    return aborted
+                review_failed = review_verification["status"] != "PASSED" and not (
+                    review_verification["status"] == "NOT_RUN" and not verification_required
+                )
+                if review_failed:
+                    raise RuntimeError(f"Reviewer repair verification failed: {review_verification['status']}")
+
+                staged_diff = await asyncio.to_thread(workspace_session.review_diff) if workspace_session is not None else "Unavailable in simulation"
+                second_prompt = (
+                    f"{rev_prompt}\n\nPrevious findings:\n{findings}\n\n"
+                    f"Post-repair verification: {review_verification['status']}\n"
+                    f"Updated unified diff:\n{staged_diff}\n\n"
+                    "Review the repaired result and return a fresh review_verdict block."
+                )
+                t0_second_review = time.time()
+                rev_res = await dispatch(
+                    project_id=project_id, role="Reviewer", prompt=second_prompt,
+                    workspace_path=execution_workspace, project_context=sprint_context,
+                    event_callback=event_callback,
+                )
+                record_res(rev_res, role="Reviewer", duration=time.time() - t0_second_review)
+                verdict = {"verdict": "APPROVED", "findings": [], "owners": []} if self.runner.use_mock else parse_reviewer_verdict(rev_res.get("response", ""))
+                await event_callback("AGENT_RESPONSE", {
+                    "project_id": project_id, "sprint_id": sprint_id, "role": "Reviewer",
+                    "step_label": "Code Review 2", "response": rev_res.get("response", ""),
+                })
+
             if verdict["verdict"] != "APPROVED":
                 findings = "; ".join(str(item) for item in verdict.get("findings", [])) or "No actionable findings supplied"
                 self.store.update_task_result(t_rev.task_id, rev_res.get("response", findings), status="FAILED")
@@ -886,8 +972,6 @@ class Orchestrator:
                 raise RuntimeError(f"Reviewer {verdict['verdict']}: {findings}")
             self.store.update_task_result(t_rev.task_id, rev_res.get("response", "Release approved"), status="DONE")
             await update_agent("Reviewer", "DONE", "Release approved")
-            if event_callback:
-                await event_callback("AGENT_RESPONSE", {"project_id": project_id, "sprint_id": sprint_id, "role": "Reviewer", "step_label": "Code Review & Release Notes", "response": rev_res.get("response", "")})
     
             if hasattr(self.store, "save_agent_sprint_log"):
                 try:
@@ -902,7 +986,7 @@ class Orchestrator:
             workspace_changes = {"added": [], "modified": [], "deleted": []}
             if not self.runner.use_mock:
                 await update_agent("QATester", "TESTING", "Running final verification after review")
-                final_verification = await verify_workspace(execution_workspace)
+                final_verification = await run_verification()
                 final_checks = ", ".join(
                     f"{check['name']}={check['status']}" for check in final_verification.get("checks", [])
                 ) or "no checks discovered"
@@ -911,10 +995,16 @@ class Orchestrator:
                     "step_label": "Final Verification",
                     "response": f"Final verification: {final_verification['status']}\n{final_checks}",
                 })
-                if tests_passed and final_verification["status"] != "PASSED":
+                aborted = await check_and_handle_abort()
+                if aborted:
+                    return aborted
+                final_failed = final_verification["status"] != "PASSED" and not (
+                    final_verification["status"] == "NOT_RUN" and not verification_required
+                )
+                if tests_passed and final_failed:
                     raise RuntimeError(f"Final verification failed: {final_verification['status']}")
 
-                workspace_changes = workspace_session.commit()
+                workspace_changes = await asyncio.to_thread(workspace_session.commit)
                 workspace_committed = True
                 await event_callback("WORKSPACE_COMMITTED", {
                     "project_id": project_id,

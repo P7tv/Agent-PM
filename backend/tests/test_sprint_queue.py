@@ -29,6 +29,16 @@ def test_state_store_queue_ops():
         assert len(q2) == 1
         assert q2[0].directive == "Directive 2"
 
+
+def test_queue_item_can_only_be_claimed_once(isolated_db):
+    item = isolated_db.enqueue_directive("p1", "Exactly once")
+    next_item = isolated_db.enqueue_directive("p1", "Wait for first")
+    assert isolated_db.claim_queue_item(item.queue_id) is True
+    assert isolated_db.claim_queue_item(item.queue_id) is False
+    assert isolated_db.claim_queue_item(next_item.queue_id) is False
+    isolated_db.update_queue_item(item.queue_id, "COMPLETED")
+    assert isolated_db.claim_queue_item(next_item.queue_id) is True
+
 @pytest.mark.asyncio
 async def test_sprint_queue_drains_sequentially():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -101,3 +111,24 @@ def test_sprint_queue_api_endpoints():
     
     # Clean up project
     client.delete("/api/projects/test-q-api")
+
+
+def test_project_queue_endpoints_enforce_ownership_and_values(isolated_db, tmp_path):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    isolated_db.create_project("owner-a", "A", str(tmp_path), True)
+    isolated_db.create_project("owner-b", "B", str(tmp_path), True)
+    item = isolated_db.enqueue_directive("owner-b", "Private queue item")
+    client = TestClient(app)
+
+    assert client.delete(f"/api/projects/owner-a/queue/{item.queue_id}").status_code == 404
+    assert client.patch(
+        f"/api/projects/owner-a/queue/{item.queue_id}/priority", json={"priority": "HIGH"}
+    ).status_code == 404
+    assert client.post(
+        f"/api/projects/owner-a/queue/{item.queue_id}/reorder", json={"direction": "up"}
+    ).status_code == 404
+    assert client.patch(f"/api/queue/{item.queue_id}/priority", json={"priority": "INVALID"}).status_code == 422
+    assert client.post(f"/api/queue/{item.queue_id}/reorder", json={"direction": "sideways"}).status_code == 422
+    assert isolated_db.get_queue_item(item.queue_id).status == "QUEUED"

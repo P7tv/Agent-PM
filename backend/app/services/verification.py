@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import shlex
 from typing import Any, Dict, List
 
 from app.services.process_runner import run_process
@@ -33,6 +34,16 @@ def _npm_args(script_name: str, script: str) -> list[str]:
     return args
 
 
+def _is_read_only_script(script: str) -> bool:
+    """Reject common watch/fix modes that mutate files or never terminate."""
+    try:
+        tokens = {token.lower() for token in shlex.split(script)}
+    except ValueError:
+        return False
+    blocked = {"--watch", "--watchall", "--fix", "--write", "-w", "dev", "serve", "start"}
+    return not (tokens & blocked) and not any(token.startswith("--watch=") for token in tokens)
+
+
 def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
     root = Path(workspace)
     checks: List[Dict[str, Any]] = []
@@ -47,7 +58,7 @@ def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
         relative_cwd = package_file.parent.relative_to(root).as_posix()
         for name in ("test", "typecheck", "check", "lint", "build"):
             script = scripts.get(name)
-            if script and not any(word in str(script).lower() for word in ("--watch", " dev", "serve")):
+            if script and _is_read_only_script(str(script)):
                 checks.append({
                     "name": f"npm {name}" + (f" ({relative_cwd})" if relative_cwd != "." else ""),
                     "args": _npm_args(name, str(script)), "cwd": str(package_file.parent),
@@ -80,6 +91,8 @@ def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
             {"name": "cargo test", "args": [shutil.which("cargo") or "cargo", "test"], "cwd": str(root), "kind": "test"},
             {"name": "cargo check", "args": [shutil.which("cargo") or "cargo", "check"], "cwd": str(root), "kind": "build"},
         ])
+    order = {"test": 0, "typecheck": 1, "check": 1, "lint": 2, "build": 3}
+    checks.sort(key=lambda item: (order.get(item["kind"], 9), item["name"]))
     return checks
 
 
