@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Crown, Activity, CheckCircle2, AlertTriangle, ArrowRight, Send, MessageSquare, Loader2, Sparkles } from 'lucide-react';
+import { X, Crown, Activity, CheckCircle2, AlertTriangle, ArrowRight, Send, MessageSquare, Loader2, Sparkles, RotateCcw } from 'lucide-react';
 
 export default function TechLeadStandupModal({ isOpen, onClose, projectId, projectName, theme }) {
   const [loading, setLoading] = useState(true);
@@ -13,7 +13,13 @@ export default function TechLeadStandupModal({ isOpen, onClose, projectId, proje
 
     let isMounted = true;
     setLoading(true);
-    setChatMessages([]);
+
+    const storageKey = `standup_chat_${projectId}`;
+    let savedMsgs = null;
+    try {
+      const item = sessionStorage.getItem(storageKey);
+      if (item) savedMsgs = JSON.parse(item);
+    } catch (e) {}
 
     fetch(`/api/projects/${projectId}/standup`, { method: 'POST' })
       .then((res) => res.json())
@@ -21,12 +27,18 @@ export default function TechLeadStandupModal({ isOpen, onClose, projectId, proje
         if (isMounted) {
           setStandup(data);
           setLoading(false);
-          setChatMessages([
-            {
-              sender: 'lead',
-              text: `Greetings! I am the Tech Lead for ${data.project_name || projectName}. Currently our project is ${data.health_status?.replace('_', ' ')} at ${data.progress_percent}% completion. Ask me anything about our tasks, architecture, or blockers!`
-            }
-          ]);
+          if (savedMsgs && savedMsgs.length > 0) {
+            setChatMessages(savedMsgs);
+          } else {
+            const initialGreeting = [
+              {
+                sender: 'lead',
+                text: `Greetings! I am the Tech Lead for ${data.project_name || projectName}. Currently our project is ${data.health_status?.replace('_', ' ')} at ${data.progress_percent}% completion. Ask me anything about our tasks, architecture, or blockers!`
+              }
+            ];
+            setChatMessages(initialGreeting);
+            try { sessionStorage.setItem(storageKey, JSON.stringify(initialGreeting)); } catch (e) {}
+          }
         }
       })
       .catch((err) => {
@@ -46,13 +58,27 @@ export default function TechLeadStandupModal({ isOpen, onClose, projectId, proje
   const currentTheme = theme || (typeof document !== 'undefined' ? document.documentElement.getAttribute('data-theme') : 'light') || 'light';
   const isDark = currentTheme === 'dark';
 
+  const handleResetChat = () => {
+    const storageKey = `standup_chat_${projectId}`;
+    const initialGreeting = [
+      {
+        sender: 'lead',
+        text: `Greetings! I am the Tech Lead for ${standup?.project_name || projectName}. Currently our project is ${standup?.health_status?.replace('_', ' ')} at ${standup?.progress_percent}% completion. Ask me anything about our tasks, architecture, or blockers!`
+      }
+    ];
+    setChatMessages(initialGreeting);
+    try { sessionStorage.removeItem(storageKey); } catch (e) {}
+  };
+
   const handleSendChat = async (e) => {
     e.preventDefault();
     if (!chatInput.trim() || sendingChat) return;
 
     const userMsg = chatInput.trim();
     setChatInput('');
-    setChatMessages((prev) => [...prev, { sender: 'user', text: userMsg }]);
+    const newMsgs = [...chatMessages, { sender: 'user', text: userMsg }];
+    setChatMessages(newMsgs);
+    try { sessionStorage.setItem(`standup_chat_${projectId}`, JSON.stringify(newMsgs)); } catch (e) {}
     setSendingChat(true);
 
     try {
@@ -62,12 +88,16 @@ export default function TechLeadStandupModal({ isOpen, onClose, projectId, proje
         body: JSON.stringify({ message: userMsg })
       });
       const data = await res.json();
-      setChatMessages((prev) => [...prev, { sender: 'lead', text: data.message }]);
+      const updatedMsgs = [...newMsgs, { sender: 'lead', text: data.message }];
+      setChatMessages(updatedMsgs);
+      try { sessionStorage.setItem(`standup_chat_${projectId}`, JSON.stringify(updatedMsgs)); } catch (e) {}
     } catch (err) {
-      setChatMessages((prev) => [
-        ...prev,
+      const fallbackMsgs = [
+        ...newMsgs,
         { sender: 'lead', text: 'Sorry, I ran into an error retrieving that status. Please try again.' }
-      ]);
+      ];
+      setChatMessages(fallbackMsgs);
+      try { sessionStorage.setItem(`standup_chat_${projectId}`, JSON.stringify(fallbackMsgs)); } catch (e) {}
     } finally {
       setSendingChat(false);
     }
@@ -278,9 +308,21 @@ export default function TechLeadStandupModal({ isOpen, onClose, projectId, proje
               flexDirection: 'column',
               gap: '10px'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: '700', color: isDark ? '#f8fafc' : '#0f172a' }}>
-                <MessageSquare size={16} color="var(--primary)" />
-                <span>Ask Tech Lead Directly</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: '700', color: isDark ? '#f8fafc' : '#0f172a' }}>
+                  <MessageSquare size={16} color="var(--primary)" />
+                  <span>Ask Tech Lead Directly</span>
+                </div>
+                <button
+                  type="button"
+                  className="view-btn"
+                  onClick={handleResetChat}
+                  title="Reset conversation"
+                  style={{ fontSize: '11px', padding: '2px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                >
+                  <RotateCcw size={11} />
+                  <span>Reset</span>
+                </button>
               </div>
 
               {/* Chat Stream */}

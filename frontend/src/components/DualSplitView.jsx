@@ -130,36 +130,37 @@ export default function DualSplitView({
         );
       })}
 
-      {/* Empty column if fewer than 2 projects */}
-      {projects.length < 2 && (
-        <div 
-          className="project-column" 
-          style={{ 
-            border: '2px dashed var(--border-medium)', 
-            display: 'flex', 
-            flexDirection: 'column', 
-            alignItems: 'center', 
-            justifyContent: 'center', 
-            minHeight: '340px',
-            textAlign: 'center',
-            cursor: 'pointer'
-          }}
-          onClick={onOpenAddProject}
-        >
-          <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--primary-subtle)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>
-            <FolderPlus size={24} />
-          </div>
-          <h4 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
-            Connect Project 02
-          </h4>
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', maxWidth: '240px', marginBottom: '14px' }}>
-            Split screen will display both projects side-by-side.
-          </p>
-          <button className="dispatch-btn" style={{ fontSize: '12px', padding: '6px 14px' }}>
-            + Add Project
-          </button>
+      {/* Add Project column slot */}
+      <div 
+        className="project-column" 
+        style={{ 
+          border: '2px dashed var(--border-medium)', 
+          display: 'flex', 
+          flexDirection: 'column', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          minHeight: '340px',
+          textAlign: 'center',
+          cursor: 'pointer',
+          background: 'var(--bg-canvas)',
+          opacity: 0.9,
+          transition: 'all 0.2s ease'
+        }}
+        onClick={onOpenAddProject}
+      >
+        <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--primary-subtle)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>
+          <FolderPlus size={24} />
         </div>
-      )}
+        <h4 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '4px' }}>
+          Connect Project {String(projects.length + 1).padStart(2, '0')}
+        </h4>
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)', maxWidth: '240px', marginBottom: '14px' }}>
+          Split screen will display your projects side-by-side.
+        </p>
+        <button className="dispatch-btn" style={{ fontSize: '12px', padding: '6px 14px' }}>
+          + Add Project
+        </button>
+      </div>
     </div>
   );
 }
