@@ -37,13 +37,32 @@ export default function App() {
 
 function AppContent() {
   const toast = useToast();
+  const parseRoute = () => {
+    const hash = window.location.hash.replace(/^#\/?/, '');
+    const parts = hash.split('/').filter(Boolean);
+    if (parts[0] === 'project' && parts[1]) {
+      return {
+        viewMode: 'FOCUS',
+        projectId: parts[1],
+        tab: parts[2] || 'mission-hub'
+      };
+    }
+    return {
+      viewMode: 'OFFICE',
+      projectId: null,
+      tab: 'mission-hub'
+    };
+  };
+
+  const initialRoute = parseRoute();
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('theme') || 'dark';
   });
-  const [viewMode, setViewMode] = useState('OFFICE'); // OFFICE, SPLIT, FOCUS
+  const [viewMode, setViewMode] = useState(initialRoute.viewMode);
   const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState(null);
-  const [focusedProjectId, setFocusedProjectId] = useState(null);
+  const [activeProjectId, setActiveProjectId] = useState(initialRoute.projectId);
+  const [focusedProjectId, setFocusedProjectId] = useState(initialRoute.projectId);
+  const [activeTabFromRoute, setActiveTabFromRoute] = useState(initialRoute.tab);
   const [activeWhisperAgent, setActiveWhisperAgent] = useState(null); // { project, agent }
 
   const [agentStates, setAgentStates] = useState({}); // { [projId]: [AgentState] }
@@ -66,8 +85,24 @@ function AppContent() {
   const [globalQueue, setGlobalQueue] = useState([]);
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
 
-
   const socketRef = useRef(null);
+
+  // Sync route on hashchange (Browser Back/Forward or manual URL edit)
+  useEffect(() => {
+    const handleHashChange = () => {
+      const r = parseRoute();
+      setViewMode(r.viewMode);
+      setFocusedProjectId(r.projectId);
+      if (r.projectId) {
+        setActiveProjectId(r.projectId);
+      }
+      if (r.tab) {
+        setActiveTabFromRoute(r.tab);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   // Sync theme with DOM and localStorage
   useEffect(() => {
@@ -86,7 +121,13 @@ function AppContent() {
       const data = await res.json();
       
       setProjects(data);
-      if (data.length > 0 && (!activeProjectId || !data.some(p => p.project_id === activeProjectId))) {
+      const route = parseRoute();
+      if (route.projectId && data.some(p => p.project_id === route.projectId)) {
+        setActiveProjectId(route.projectId);
+        setFocusedProjectId(route.projectId);
+        setViewMode('FOCUS');
+        if (route.tab) setActiveTabFromRoute(route.tab);
+      } else if (data.length > 0 && (!activeProjectId || !data.some(p => p.project_id === activeProjectId))) {
         setActiveProjectId(data[0].project_id);
       }
 
@@ -430,9 +471,18 @@ function AppContent() {
     }
   };
 
-  const handleFocusProject = (projectId) => {
+  const handleFocusProject = (projectId, tab = 'mission-hub') => {
     setFocusedProjectId(projectId);
+    setActiveProjectId(projectId);
     setViewMode('FOCUS');
+    setActiveTabFromRoute(tab);
+    window.location.hash = `#/project/${projectId}/${tab}`;
+  };
+
+  const handleBackToOverview = () => {
+    setViewMode('OFFICE');
+    setFocusedProjectId(null);
+    window.location.hash = '#/';
   };
 
   const handleRerunSprint = (directive) => {
@@ -705,6 +755,11 @@ function AppContent() {
         {viewMode === 'FOCUS' && focusedProject && (
           <FocusRoomView
             project={focusedProject}
+            initialTab={activeTabFromRoute}
+            onTabChange={(tab) => {
+              setActiveTabFromRoute(tab);
+              window.location.hash = `#/project/${focusedProject.project_id}/${tab}`;
+            }}
             agents={agentStates[focusedProjectId] || []}
             tasks={tasksByProject[focusedProjectId] || []}
             liveStream={liveStreams[focusedProjectId] || []}
@@ -712,7 +767,7 @@ function AppContent() {
             timelineEvents={timelineEvents[focusedProjectId] || []}
             sprints={sprintsByProject[focusedProjectId] || []}
             onRerunSprint={handleRerunSprint}
-            onBack={() => setViewMode('OFFICE')}
+            onBack={handleBackToOverview}
             onSendConsoleMessage={handleSendConsoleMessage}
             onSendWhisper={handleSendWhisper}
             onRequestDelete={setProjectToDelete}

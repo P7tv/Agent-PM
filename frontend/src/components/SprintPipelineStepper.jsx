@@ -16,8 +16,9 @@ export default function SprintPipelineStepper({ agents = [], sprints = [] }) {
     agentMap[a.role] = a.status;
   });
 
-  const latestSprint = sprints && sprints.length > 0 ? sprints[0] : null;
-  const isSprintRunning = latestSprint && latestSprint.status === 'RUNNING';
+  const activeSprint = (sprints || []).find((s) => s.status === 'RUNNING');
+  const latestSprint = activeSprint || (sprints && sprints.length > 0 ? sprints[sprints.length - 1] : null);
+  const isSprintRunning = Boolean(activeSprint);
 
   let currentStage = 0;
   if (isSprintRunning) {
@@ -36,20 +37,21 @@ export default function SprintPipelineStepper({ agents = [], sprints = [] }) {
     }
   } else if (latestSprint && latestSprint.status === 'COMPLETED') {
     currentStage = 6; // All stages completed
+  } else if (latestSprint && latestSprint.status === 'FAILED') {
+    currentStage = 4;
   }
 
-  // If no sprint active and not just completed, return subtle standby bar
-  if (!isSprintRunning && currentStage !== 6) {
-    return null;
-  }
+  const badgeText = isSprintRunning 
+    ? '⚡ SPRINT IN PROGRESS' 
+    : (latestSprint && latestSprint.status === 'COMPLETED' ? '✅ LATEST SPRINT COMPLETED' : '⚪ PIPELINE STANDBY');
 
   return (
     <div className="sprint-pipeline-stepper" role="progressbar" aria-label="Sprint Pipeline Progress">
       <div className="stepper-header">
         <div className="stepper-title-wrap">
-          <span className="stepper-badge">{isSprintRunning ? 'SPRINT IN PROGRESS' : 'LATEST SPRINT COMPLETED'}</span>
+          <span className={`stepper-badge ${isSprintRunning ? 'is-running' : ''}`}>{badgeText}</span>
           <span className="stepper-directive-text" title={latestSprint?.directive}>
-            {latestSprint?.directive || 'Multi-Agent Pipeline'}
+            {latestSprint?.directive || 'Ready for next PM directive'}
           </span>
         </div>
         {latestSprint?.sprint_id && (
