@@ -145,6 +145,7 @@ preview:
 - ระบบ production จะรายงานข้อผิดพลาดเมื่อ AI ใช้งานไม่ได้ ไม่มีการจำลองงานแล้วแสดงว่าสร้างเสร็จ
 - `AGENT_EFFORT=high` และ `AGENT_TIMEOUT_SECONDS=600` เป็นค่าเริ่มต้น ปรับได้ใน `.env` แล้ว restart backend
 - CLI ส่งอัปเดตเวลารอทุกประมาณ 10 วินาที การรายงานนี้หมายถึง process ยังรอผล ไม่ใช่หลักฐานว่าเขียนไฟล์หรือทดสอบผ่านแล้ว
+- CLI รับผลแบบ JSON และตรวจ status แม้ exit code เป็น 0; ขั้นวางแผนปิด slash-command expansion และใช้เครื่องมืออ่านไฟล์ หากไม่มีคำตอบหรือหยุดที่ tool permission จะลองอีกครั้งแบบไม่ใช้เครื่องมือได้ 1 รอบภายใน timeout เดิม ส่วนขั้น implementation จะไม่ replay อัตโนมัติ เพราะอาจแก้ไฟล์ไปแล้ว
 - Agent ที่แก้ไฟล์ทำงานตามลำดับใน staged workspace; ระบบตรวจ conflict ก่อนนำผลกลับเข้า workspace หลัก
 - QA ตรวจ process exit code รองรับ npm scripts (`test`, `typecheck`, `check`, `lint`, `build`), pytest, Go และ Cargo ทั้งที่ root และ package ชั้นแรกของ monorepo หากไม่พบ check จะแจ้ง `NOT_RUN` และไม่ถือว่าผ่าน
 - Auto-Pilot จะหยุดทันทีเมื่อ QA ยังไม่ผ่านหลังครบจำนวนครั้ง ส่วน Gate Mode จะเปิดให้ PM ตัดสินใจรับความเสี่ยง ผลทดสอบอัตโนมัติยังไม่แทนการตรวจ UX ด้วยมนุษย์

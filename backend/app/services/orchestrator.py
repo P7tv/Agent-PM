@@ -72,6 +72,7 @@ class Orchestrator:
         workspace_session = None
         workspace_committed = False
         source_sprint = None
+        started_roles = set()
         project = self.store.get_project(project_id)
         if not project:
             raise KeyError(f"Project {project_id} not found")
@@ -123,6 +124,7 @@ class Orchestrator:
         async def dispatch(**kwargs):
             if project_id in self._aborted_projects:
                 raise RuntimeError("Sprint aborted by PM")
+            started_roles.add(kwargs["role"])
             require_changes = kwargs.pop("require_changes", False)
             before = await asyncio.to_thread(snapshot_workspace, kwargs["workspace_path"]) if require_changes and not self.runner.use_mock else None
             if require_changes:
@@ -293,6 +295,11 @@ class Orchestrator:
         )
         self.store.record_sprint(sprint_record)
         self._active_projects.add(project_id)
+        for agent in self.store.list_agents(project_id):
+            await event_callback("AGENT_STATUS_CHANGE", {
+                "project_id": project_id, "role": agent.role, "status": "IDLE",
+                "thought": "รอเริ่มขั้นตอนของ Sprint นี้" if agent.status == "BLOCKED" else agent.thought,
+            })
 
         if event_callback:
             await event_callback("SPRINT_STARTED", {
@@ -314,6 +321,8 @@ class Orchestrator:
                     source_sprint = self.store.get_sprint(source_sprint_id)
                     if not source_sprint or source_sprint.project_id != project_id:
                         raise RuntimeError("Retry source sprint does not belong to this project")
+                    if source_sprint.execution_plan.get("checkpoint_stage") not in {"QA", "REVIEWER", "FINAL"}:
+                        raise RuntimeError("Implementation checkpoint is incomplete; re-run the directive")
                     checkpoint = source_sprint.checkpoint_path
                     try:
                         Path(checkpoint or "").resolve().relative_to(Path(runs_root).resolve())
@@ -431,6 +440,7 @@ class Orchestrator:
                     acceptance_criteria + execution_plan["acceptance_criteria"]
                 ))
             execution_plan["protected_paths"] = protected_paths
+            execution_plan["checkpoint_stage"] = "PLANNING"
             selected_roles = execution_plan["roles"]
             code_roles = [role for role in selected_roles if role not in {"Designer", "DocWriter"}]
             verification_required = bool(code_roles)
@@ -788,6 +798,8 @@ class Orchestrator:
                 return aborted
     
             # 4. QA Tester with Self-Healing Loop (Max 3 retries) and full acceptance criteria
+            execution_plan["checkpoint_stage"] = "QA"
+            self.store.update_sprint(sprint_id, execution_plan=execution_plan)
             self.store.update_task_status(t_qa.task_id, "TESTING")
             await update_agent("QATester", "TESTING", "Running test suite and regression checks")
             sprint_context["qa_criteria"] = (
@@ -969,6 +981,8 @@ class Orchestrator:
                 return aborted
     
             # 5. Reviewer signs off with full sprint blackboard
+            execution_plan["checkpoint_stage"] = "REVIEWER"
+            self.store.update_sprint(sprint_id, execution_plan=execution_plan)
             staged_evidence = await asyncio.to_thread(workspace_session.changes) if workspace_session is not None else {"added": [], "modified": [], "deleted": []}
             staged_paths = flatten_changes(staged_evidence)
             protected_violations = [path for path in staged_paths if is_protected(path)]
@@ -1098,6 +1112,8 @@ class Orchestrator:
                 return aborted
     
             final_verification = None
+            execution_plan["checkpoint_stage"] = "FINAL"
+            self.store.update_sprint(sprint_id, execution_plan=execution_plan)
             workspace_changes = {"added": [], "modified": [], "deleted": []}
             if not self.runner.use_mock:
                 await update_agent("QATester", "TESTING", "Running final verification after review")
@@ -1191,7 +1207,14 @@ class Orchestrator:
                     pass
             for r in roles_to_reset:
                 try:
-                    await update_agent(r, "BLOCKED", f"Pipeline stopped: {e}")
+                    state = self.store.get_agent_status(project_id, r)
+                    if r in started_roles and state.status not in {"DONE", "BLOCKED"}:
+                        await update_agent(r, "BLOCKED", f"Pipeline stopped: {e}")
+                    elif r not in started_roles:
+                        await event_callback("AGENT_STATUS_CHANGE", {
+                            "project_id": project_id, "role": r, "status": "IDLE",
+                            "thought": "ยังไม่เริ่มงาน เพราะ Sprint หยุดในขั้นตอนก่อนหน้า",
+                        })
                 except Exception:
                     pass
             try:

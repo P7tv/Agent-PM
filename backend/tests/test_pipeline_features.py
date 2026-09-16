@@ -127,6 +127,18 @@ def test_openapi_operation_ids_are_unique(isolated_db):
     assert len(operation_ids) == len(set(operation_ids))
 
 
+def test_triage_failure_cannot_resume_as_completed_implementation(tmp_path, isolated_db):
+    workspace = tmp_path / 'checkpoint'
+    workspace.mkdir()
+    isolated_db.record_sprint(SprintRecord(
+        sprint_id='triage-failed', project_id='project', directive='Build',
+        status='FAILED', checkpoint_path=str(workspace),
+    ))
+    response = TestClient(app).post('/api/projects/project/sprints/triage-failed/retry', json={'stage': 'QA'})
+    assert response.status_code == 409
+    assert 'Re-run' in response.json()['detail']
+
+
 @pytest.mark.asyncio
 async def test_change_request_gate_preserves_feedback(isolated_db, tmp_path):
     from app.services.agent_runner import AgentRunner

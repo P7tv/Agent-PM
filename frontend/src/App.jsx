@@ -411,6 +411,7 @@ function AppContent() {
           } else if (evType === 'PROJECT_DELETED') {
             fetchData();
           } else if (evType === 'PIPELINE_COMPLETED') {
+            fetchRuntime();
             if (projId) {
               fetchSprints(projId);
               fetchProjectDetails(projId);
@@ -428,6 +429,7 @@ function AppContent() {
             }
           } else if (['SPRINT_STARTED', 'PIPELINE_REJECTED', 'PIPELINE_HALTED'].includes(evType)) {
             if (projId) {
+              fetchRuntime();
               fetchSprints(projId);
               fetchProjectDetails(projId);
               if (evType !== 'SPRINT_STARTED') toast.error(data.summary || 'Sprint stopped');

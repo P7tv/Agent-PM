@@ -255,6 +255,8 @@ async def retry_sprint(project_id: str, sprint_id: str, req: RetrySprintRequest)
     if not sprint.checkpoint_path or not os.path.isdir(sprint.checkpoint_path):
         raise HTTPException(status_code=409, detail="This sprint has no preserved checkpoint")
     plan = sprint.execution_plan or {}
+    if plan.get("checkpoint_stage") not in {"QA", "REVIEWER", "FINAL"}:
+        raise HTTPException(status_code=409, detail="Implementation did not finish. Re-run the directive instead of resuming QA.")
     item = sprint_queue.enqueue(
         project_id, sprint.directive,
         acceptance_criteria=plan.get("acceptance_criteria", []),

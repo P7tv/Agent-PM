@@ -45,47 +45,119 @@ ROLE_PROMPTS = {
     "DocWriter": "You are a technical writer. Produce documentation, READMEs, and API references."
 }
 
+
+class CLIExecutionError(RuntimeError):
+    def __init__(self, message, code="CLI_ERROR"):
+        super().__init__(message)
+        self.code = code
+
+
+class CLIResponse(str):
+    def __new__(cls, text, tokens_used=0):
+        value = super().__new__(cls, text)
+        value.tokens_used = tokens_used
+        return value
+
+
+def parse_cli_response(result):
+    """Inspect the print-mode result even when the CLI exits successfully."""
+    raw = result.get("stdout", "").strip()
+    stderr = result.get("stderr", "").strip()
+    payload = None
+    try:
+        payload = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        pass
+    if isinstance(payload, dict):
+        status = str(payload.get("status", "")).upper()
+        response = payload.get("response", "")
+        detail = payload.get("error") or payload.get("message") or ""
+        if not isinstance(detail, str):
+            detail = json.dumps(detail, ensure_ascii=False)
+        failed = status not in {"SUCCESS", "COMPLETED"} or bool(payload.get("is_error"))
+        diagnostics = f"{status} {detail} {stderr}".lower()
+    else:
+        response = raw
+        failed = result.get("exit_code") != 0
+        diagnostics = f"{raw} {stderr}".lower()
+    if failed or result.get("exit_code") != 0 or not isinstance(response, str) or not response.strip():
+        if any(term in diagnostics for term in ("not logged", "unauthenticated", "login expired", "authentication", "sign in")):
+            raise CLIExecutionError("CLI ยังไม่ได้เข้าสู่ระบบหรือ session หมดอายุ กรุณาเข้าสู่ระบบ agy แล้วลองใหม่", "AUTH_REQUIRED")
+        if any(term in diagnostics for term in ("permission", "confirmation", "approval", "soft-den", "denied")):
+            raise CLIExecutionError("CLI หยุดรอสิทธิ์ใช้เครื่องมือในโหมด non-interactive", "PERMISSION_REQUIRED")
+        if any(term in diagnostics for term in ("quota", "resource_exhausted", "rate limit")):
+            raise CLIExecutionError("CLI ถูกจำกัด quota หรือ rate limit กรุณาลองใหม่ภายหลัง", "RATE_LIMITED")
+        if isinstance(response, str) and not response.strip() and not failed and result.get("exit_code") == 0:
+            raise CLIExecutionError(
+                "CLI จบโดยไม่มีคำตอบสุดท้าย อาจหยุดที่การขอสิทธิ์ใช้เครื่องมือ; ยังไม่ถือว่างานสำเร็จ",
+                "EMPTY_RESPONSE",
+            )
+        detail = (payload.get("error") or payload.get("message") or stderr or payload.get("status")) if isinstance(payload, dict) else stderr or raw
+        raise CLIExecutionError(f"CLI execution failed: {str(detail)[:1200]}", "CLI_ERROR")
+    usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+    tokens = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
+    return CLIResponse(response.strip(), tokens if isinstance(tokens, int) else 0)
+
 class AgentRunner:
     def __init__(self, use_mock: bool = False, skill_manager: Optional[SkillManager] = None, store: Optional[Any] = None):
         self.use_mock = use_mock
         self.has_api_key = bool(os.environ.get("GEMINI_API_KEY"))
         self.skill_manager = skill_manager or SkillManager()
         self.store = store
+        self.last_runtime_error = None
 
     def runtime_status(self):
         sdk = self.has_api_key and HAS_ANTIGRAVITY
         cli = bool(HAS_AGY_CLI and os.path.isfile(AGY_PATH))
-        return {
+        status = {
             "available": bool(sdk or cli or self.use_mock),
             "mode": "mock" if self.use_mock else "sdk" if sdk else "cli" if cli else "unavailable",
             "message": "โหมดจำลอง: ไม่มีการสร้างไฟล์จริง" if self.use_mock else
                        "พร้อมเรียก AI (จะตรวจการเชื่อมต่อเมื่อเริ่มงาน)" if sdk or cli else
                        "ไม่พบ AI runtime: ตั้งค่า AGY_PATH และเข้าสู่ระบบ agy หรือใช้ SDK พร้อม GEMINI_API_KEY",
         }
+        if self.last_runtime_error and not self.use_mock:
+            status["last_error"] = self.last_runtime_error
+            status["message"] = f"พบ {status['mode']} runtime แต่การเรียกครั้งล่าสุดไม่สำเร็จ: {self.last_runtime_error['message']}"
+        return status
 
     async def _run_cli(self, prompt, workspace_path, emit=None, chat=False):
         timeout = max(1.0, float(os.environ.get("AGENT_TIMEOUT_SECONDS", "600")))
         effort = os.environ.get("AGENT_EFFORT", "high")
         if effort not in {"low", "medium", "high"}:
             raise ValueError("AGENT_EFFORT must be low, medium, or high")
-        args = [AGY_PATH, "--add-dir", workspace_path, "-p", prompt,
-                "--effort", effort, "--print-timeout", f"{timeout:g}s"]
-        args += ["--mode", "plan"] if chat else ["--dangerously-skip-permissions"]
-        if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):
-            args = ["cmd.exe", "/c"] + args
+        started = time.monotonic()
+        if chat:
+            prompt += (
+                "\nRead-only planning: use file browsing/read tools only. Do not invoke terminal, RunCommand, "
+                "or tools requiring confirmation. If repository inspection is unavailable, return your analysis "
+                "from the supplied context and explicitly list unverified assumptions. Always finish with a final text response."
+            )
         async def progress(elapsed):
             if emit:
                 await emit("AGENT_PROGRESS", {
                     "message": f"กำลังรอผลจาก AI • {int(elapsed)} วินาที (สูงสุด {int(timeout)} วินาที)",
                     "elapsed_seconds": elapsed,
                 })
-        result = await run_process(args, workspace_path, timeout, progress)
-        if result["exit_code"] != 0:
-            raise RuntimeError(result["stderr"][-1500:] or f"CLI exited with code {result['exit_code']}")
-        text = result["stdout"].strip()
-        if not text:
-            raise RuntimeError("AI returned an empty response")
-        return text
+        for attempt in range(2 if chat else 1):
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError(f"Execution timed out after {timeout:g} seconds")
+            args = [AGY_PATH, "--add-dir", workspace_path, "-p", prompt,
+                    "--effort", effort, "--print-timeout", f"{remaining:g}s",
+                    "--output-format", "json", "--disable-slash-commands"]
+            args += ["--mode", "plan"] if chat else ["--dangerously-skip-permissions"]
+            if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):
+                args = ["cmd.exe", "/c"] + args
+            result = await run_process(args, workspace_path, remaining, progress)
+            try:
+                return parse_cli_response(result)
+            except CLIExecutionError as exc:
+                if not chat or attempt or exc.code not in {"EMPTY_RESPONSE", "PERMISSION_REQUIRED"}:
+                    raise
+                if emit:
+                    await emit("AGENT_PROGRESS", {"message": "CLI ไม่ส่งคำตอบหรือรอสิทธิ์ กำลังลองวิเคราะห์อีกครั้งโดยไม่ใช้เครื่องมือ (1/1)"})
+                prompt += "\nRecovery: return the final requested analysis directly now. Do not call any tools."
 
     async def _write_proposals(self, text, workspace_path, emit):
         from app.services.console_service import parse_code_proposals
@@ -215,6 +287,7 @@ class AgentRunner:
             system_instruction += "\nInspect and report only. Do not edit project files during planning or review."
 
         errors = []
+        error_code = None
         # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present)
         if self.has_api_key and HAS_ANTIGRAVITY:
             try:
@@ -280,17 +353,21 @@ class AgentRunner:
                     f"Operate only inside {workspace_path}. Respond in the user's language."
                 )
                 text = await self._run_cli(full_query, workspace_path, emit, chat=planning_only)
+                self.last_runtime_error = None
                 await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
-                return {"status": "SUCCESS", "role": role, "response": text,
-                        "tokens_used": len(text) // 4, "backend_used": "cli",
+                return {"status": "SUCCESS", "role": role, "response": str(text),
+                        "tokens_used": getattr(text, "tokens_used", 0) or len(text) // 4, "backend_used": "cli",
                         "active_skills": [s.name for s in active_skills]}
             except Exception as e:
                 errors.append(f"CLI: {e}")
+                error_code = getattr(e, "code", "CLI_ERROR")
+                self.last_runtime_error = {"code": error_code, "message": str(e)}
 
         message = " | ".join(errors) or self.runtime_status()["message"]
         await emit("AGENT_STATUS_CHANGE", {"status": "BLOCKED", "thought": message})
         await emit("AGENT_ERROR", {"message": message})
         return {"status": "FAILED", "role": role, "response": message, "error": message,
+                "error_code": error_code,
                 "tokens_used": 0, "backend_used": "sdk" if errors and errors[0].startswith("SDK") else "cli" if errors else "unavailable",
                 "active_skills": [s.name for s in active_skills]}
 
@@ -403,10 +480,13 @@ class AgentRunner:
         if not response_text and not errors and not self.use_mock and HAS_AGY_CLI and os.path.exists(AGY_PATH):
             try:
                 response_text = await self._run_cli(full_prompt, workspace_path, emit, chat=True)
+                self.last_runtime_error = None
                 backend_used = "cli"
-                tokens_used = len(response_text) // 4
+                tokens_used = getattr(response_text, "tokens_used", 0) or len(response_text) // 4
+                response_text = str(response_text)
             except Exception as e:
                 errors.append(f"CLI: {e}")
+                self.last_runtime_error = {"code": getattr(e, "code", "CLI_ERROR"), "message": str(e)}
 
         if not response_text and not self.use_mock:
             message = " | ".join(errors) or self.runtime_status()["message"]

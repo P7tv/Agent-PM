@@ -123,7 +123,7 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
                       ↺ Re-run
                     </button>
                   )}
-                  {onRetry && ['FAILED', 'REJECTED'].includes(sp.status) && sp.checkpoint_path && (
+                  {onRetry && ['FAILED', 'REJECTED'].includes(sp.status) && sp.checkpoint_path && ['QA', 'REVIEWER', 'FINAL'].includes(sp.execution_plan?.checkpoint_stage) && (
                     <button className="sprint-rerun-btn" onClick={() => onRetry(sp, 'QA')} title="Continue from preserved staged changes">
                       ▶ Resume QA
                     </button>

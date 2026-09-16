@@ -48,7 +48,8 @@ async def test_cli_failure_exposes_stderr(monkeypatch, tmp_path):
     monkeypatch.setattr(module, 'run_process', fake_process)
     result = await runner.dispatch_agent_task('p', 'Architect', 'Build', str(tmp_path))
     assert result['status'] == 'FAILED'
-    assert 'Login expired' in result['error']
+    assert result['error_code'] == 'AUTH_REQUIRED'
+    assert 'เข้าสู่ระบบ' in result['error']
 
 
 @pytest.mark.asyncio
@@ -135,6 +136,9 @@ async def test_failed_agent_halts_downstream_and_persists_reason(isolated_db, tm
     assert calls == ['TechLead']
     assert isolated_db.get_sprints('reliable')[0].status == 'FAILED'
     assert any('Provider unavailable' in m['content'] for m in isolated_db.get_console_messages('reliable'))
+    assert isolated_db.get_agent_status('reliable', 'TechLead').status == 'BLOCKED'
+    assert isolated_db.get_agent_status('reliable', 'BackendDev').status == 'IDLE'
+    assert isolated_db.get_agent_status('reliable', 'QATester').status == 'IDLE'
 
 
 @pytest.mark.asyncio
