@@ -92,7 +92,7 @@ http://127.0.0.1:8000
 
 ## 🧪 Running Automated Tests
 
-Run the full pytest suite:
+Run the full pytest suite (63/63 passing):
 
 ```bash
 # Windows (PowerShell)
@@ -101,69 +101,3 @@ $env:PYTHONPATH="backend;.backend"; python -m pytest backend/tests/ -v
 # Linux / macOS
 PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 ```
-
-## การใช้งานและติดตามงาน
-
-1. เพิ่มโปรเจกต์และเลือกโฟลเดอร์งาน ดูแถบ **AI** ด้านบนว่าพบ runtime หรือไม่ (การเข้าสู่ระบบจะตรวจเมื่อเรียกใช้งาน)
-2. **คุยปรึกษา** ใช้ถามและรับข้อเสนอโค้ด ส่วน **สั่งงานทีม / รัน Sprint** จะเริ่ม pipeline ที่ลงมือทำงาน
-3. ระบุผู้ใช้ เป้าหมาย ฟีเจอร์สำคัญ รูปแบบหน้าตา และเกณฑ์สำเร็จ เช่น “สร้างหน้ารายการสินค้า มีค้นหา เพิ่ม/แก้ไขสินค้า ใช้ React เดิม รองรับมือถือ และมี test สำหรับการค้นหา”
-4. ใน **Gate Mode** ทีมวางแผนก่อนและรออนุมัติ อ่านแผนในหน้าต่างก่อนเลือกทำต่อ หากไม่ตอบภายในเวลาที่กำหนด pipeline จะหยุด
-5. หน้าจอโปรเจกต์แสดงขั้นตอนปัจจุบัน ผู้รับผิดชอบ เวลารอ AI และผลลัพธ์แต่ละขั้นในแชต ประวัติขั้นตอนและคำตอบถูกบันทึกใน SQLite และอ่านได้หลัง reload
-6. ตรวจไฟล์ใน **Code & Changes** และตรวจผลทดสอบใน **Sprints & QA** หากสั่งไม่สำเร็จ ข้อความที่พิมพ์จะยังอยู่ให้แก้และส่งใหม่
-
-### Workflow ของ Sprint
-
-1. **TechLead + Architect** อ่าน workspace, จำกัด scope และสร้าง execution plan พร้อม acceptance criteria
-2. ระบบเลือกเฉพาะ **Designer / Frontend / Backend / specialist / DocWriter** ที่เกี่ยวข้องกับคำสั่งนั้น
-3. Agent ลงมือใน **staged workspace** และรายงานหลักฐานเป็นรายชื่อไฟล์ที่เพิ่ม แก้ หรือลบ
-4. เอกสารที่เกี่ยวข้องจะอัปเดตก่อนตรวจคุณภาพ
-5. **QA แบบ read-only** รัน test, typecheck/check, lint และ build ที่ตรวจพบ หากล้มเหลวจะส่งผลพร้อม path กลับไปยังเจ้าของงานและลองแก้ได้สูงสุด 3 รอบ งานเอกสารล้วนสามารถผ่านพร้อมสถานะ `NOT_RUN` ได้
-6. **Reviewer แบบ read-only** ตรวจ acceptance criteria, unified diff และผล QA โดยต้องคืน verdict ที่ระบบอ่านได้ หากขอแก้ ระบบให้เจ้าของงานแก้และตรวจซ้ำได้อีก 1 รอบก่อน block
-7. ระบบรัน verification รอบสุดท้าย แล้วจึงนำไฟล์จาก staged workspace กลับเข้าโปรเจกต์พร้อมกัน หาก sprint ล้มเหลวไฟล์ครึ่งงานจะไม่ถูกนำมาใช้ แต่ checkpoint จะถูกเก็บไว้ให้กด **Resume QA** หลังแก้สาเหตุได้
-
-### Project verification config
-
-คัดลอก [`.agent-pm.yml.example`](.agent-pm.yml.example) เป็น `.agent-pm.yml` ใน workspace ที่ลงทะเบียน เพื่อกำหนดคำสั่ง test/build, timeout, preview URL และ path ที่ห้าม Agent แก้ ระบบรันคำสั่งโดยไม่ผ่าน shell และไม่ยอมให้ `cwd` ออกนอก workspace
-
-```yaml
-verification:
-  checks:
-    - name: backend tests
-      command: [python, -m, pytest, -q]
-      kind: test
-      required: true
-protected_paths: [.env, secrets/]
-preview:
-  url: http://127.0.0.1:5173
-```
-
-ในช่องสั่งงาน กด **Criteria** เพื่อเพิ่ม acceptance criteria และ protected paths สำหรับ sprint นั้นโดยตรง ประวัติ Sprint จะแสดง report ที่ประกอบด้วยแผน ผลตรวจ ไฟล์ที่เปลี่ยน unified diff และ reviewer verdict และ export เป็น Markdown ได้
-
-### Runtime และคุณภาพงาน
-
-- ต้องมี `agy` ที่เข้าสู่ระบบแล้ว หรือ SDK ที่เข้ากันได้พร้อม API key; การติดตั้ง Python dependencies อย่างเดียวไม่ได้ติดตั้ง AI runtime
-- ระบบ production จะรายงานข้อผิดพลาดเมื่อ AI ใช้งานไม่ได้ ไม่มีการจำลองงานแล้วแสดงว่าสร้างเสร็จ
-- `AGENT_EFFORT=high` และ `AGENT_TIMEOUT_SECONDS=600` เป็นค่าเริ่มต้น ปรับได้ใน `.env` แล้ว restart backend
-- CLI ส่งอัปเดตเวลารอทุกประมาณ 10 วินาที การรายงานนี้หมายถึง process ยังรอผล ไม่ใช่หลักฐานว่าเขียนไฟล์หรือทดสอบผ่านแล้ว
-- Team & Skills แยกตัวตนถาวร (persona), Core Role และ Project Rules; การคุยและ Pipeline ใช้ prompt builder เดียวกัน Manual ที่ไม่มี skill ใช้ core และ project rules เท่านั้น ไม่เปลี่ยนไป Auto เอง
-- กฎร่วมอยู่ที่ `backend/agents/SYSTEM.md`; Core Role อยู่ใน `backend/skills/`; Project Rules อยู่ที่ `<workspace>/.agents/skills/<role>/SKILL.md` และ root `AGENTS.md` ใช้ทั้ง SDK และ CLI ปุ่ม Preview ไม่เรียก AI และแสดงไฟล์/hash/คำเตือน/ส่วนที่ใช้ excerpt ส่วนประวัติ prompt เก็บเฉพาะ trace ล่าสุด 50 ครั้งต่อ agent
-- `AGENT_PROMPT_MAX_CHARS=48000` กำหนดงบบริบทเป็นตัวอักษร ไม่ใช่ token; ข้อมูลส่งต่อแบบ `<agent_handoff>` เก็บ API/schema contract โดยไม่ตัดกลางข้อมูล บริบทที่จำเป็นเกินงบจะรายงาน error ให้แบ่งงาน Project Rules และ root `AGENTS.md` จำกัด 6000 ตัวอักษร; Markdown reference ใน skill โหลดสูงสุด 3 ไฟล์ในโฟลเดอร์ skill โดยไม่รัน scripts
-- `allowed_tools` / `allowed-tools` เป็น metadata แนะนำวิธีทำงาน ไม่ใช่สิทธิ์ของ runtime; ขั้น consultation/planning/design/QA analysis/review ใช้ข้อจำกัด read-only และให้ orchestrator รัน checks จริง Persona เก่าที่ถูกเขียนทับไปแล้วใช้ชื่อเดิมเป็นค่าเริ่มต้น และแสดงให้แก้ใน Team & Skills
-- CLI รับผลแบบ JSON และตรวจ status แม้ exit code เป็น 0; ขั้นวางแผนปิด slash-command expansion และใช้เครื่องมืออ่านไฟล์ หากไม่มีคำตอบหรือหยุดที่ tool permission จะลองอีกครั้งแบบไม่ใช้เครื่องมือได้ 1 รอบภายใน timeout เดิม ส่วนขั้น implementation จะไม่ replay อัตโนมัติ เพราะอาจแก้ไฟล์ไปแล้ว
-- Agent ที่แก้ไฟล์ทำงานตามลำดับใน staged workspace; ระบบตรวจ conflict ก่อนนำผลกลับเข้า workspace หลัก
-- QA ตรวจ process exit code รองรับ npm scripts (`test`, `typecheck`, `check`, `lint`, `build`), pytest, Go และ Cargo ทั้งที่ root และ package ชั้นแรกของ monorepo หากไม่พบ check จะแจ้ง `NOT_RUN` และไม่ถือว่าผ่าน
-- Auto-Pilot จะหยุดทันทีเมื่อ QA ยังไม่ผ่านหลังครบจำนวนครั้ง ส่วน Gate Mode จะเปิดให้ PM ตัดสินใจรับความเสี่ยง ผลทดสอบอัตโนมัติยังไม่แทนการตรวจ UX ด้วยมนุษย์
-- Directive ที่ค้างใน queue จะกลับมาทำต่ออัตโนมัติหลัง backend restart ส่วน sprint ที่กำลังรันตอน process หยุดจะถูกปิดเป็น failed เพื่อไม่รายงานสถานะค้าง
-- Queue เรียง `URGENT → HIGH → NORMAL → LOW`; การเลื่อนขึ้นลงทำงานภายใน priority เดียวกัน
-- Gate Mode รองรับ **ขอแก้แผน** พร้อม feedback ซึ่งส่งกลับให้ Architect ปรับแผนก่อนเริ่ม implementation
-- กดกระดิ่งบน header เพื่อรับ desktop notification เมื่อรออนุมัติ งานเสร็จ หรือ pipeline หยุด
-- CLI ลงมือทำงานด้วยสิทธิ์ของผู้ใช้ในเครื่องตามการตั้งค่าเดิมของแอป ใช้กับ workspace ที่ตั้งใจให้ agent แก้ไข
-
-Frontend visual smoke test ใช้ Chrome จริง ตรวจ DOM หลัง render และบันทึกภาพไว้ที่ `frontend/test-results/dashboard.png`:
-
-```bash
-cd frontend
-npm run test:e2e
-```
-
-หลังแก้ frontend ให้รัน `cd frontend && npm run build` แล้ว restart `python start_dashboard.py` เพื่อใช้ backend เวอร์ชันใหม่ด้วย
