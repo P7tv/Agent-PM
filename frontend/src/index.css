@@ -2768,3 +2768,9 @@ textarea:focus-visible {
   .stepper-connector { display: none; }
   .runtime-banner { padding: 10px 12px; }
 }
+.sprint-recovery-panel { margin: 12px 0; padding: 16px; border: 1px solid var(--primary); border-radius: 12px; background: var(--bg-surface); color: var(--text-primary); display: grid; gap: 8px; font-size: 13px; }
+.sprint-recovery-panel p { margin: 0; color: var(--text-secondary); }
+.sprint-recovery-panel .recovery-path, .sprint-recovery-panel li { overflow-wrap: anywhere; }
+.recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sprint-recovery-panel button:disabled { opacity: .6; cursor: wait; }
+.sprint-recovery-panel pre { max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

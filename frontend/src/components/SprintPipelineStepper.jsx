@@ -13,6 +13,7 @@ export default function SprintPipelineStepper({ agents = [], tasks = [], sprints
     ...(selectedRoles.includes('DocWriter') ? [{ label: 'เอกสาร', sub: 'DocWriter', icon: FileText, roles: ['DocWriter'] }] : []),
     { label: 'ตรวจด้วยระบบ', sub: 'Tests, lint, build', icon: FlaskConical, roles: ['QATester'] },
     { label: 'อนุมัติคุณภาพ', sub: 'Reviewer', icon: ShieldCheck, roles: ['Reviewer'] },
+    { label: 'นำไฟล์เข้าโปรเจกต์', sub: 'ตรวจขั้นสุดท้าย & ใช้ไฟล์', icon: CheckCircle2, roles: [] },
   ].map((item, index) => ({ ...item, id: index + 1 }));
   const running = latest?.status === 'RUNNING';
   const complete = latest?.status === 'COMPLETED';
@@ -22,7 +23,7 @@ export default function SprintPipelineStepper({ agents = [], tasks = [], sprints
   const gateEvent = [...recent].reverse().find(e => ['DECISION_GATE_OPEN', 'DECISION_GATE_RESOLVED'].includes(e.type));
   const waiting = running && gateEvent?.type === 'DECISION_GATE_OPEN';
   const activeRole = activeAgents[activeAgents.length - 1]?.role;
-  const stage = complete ? stages.length + 1 : running ? stages.find(s => s.roles.includes(activeRole))?.id || 1 : 0;
+  const stage = complete ? stages.length + 1 : running ? latest.execution_plan?.checkpoint_stage === 'FINAL' ? stages.length : stages.find(s => s.roles.includes(activeRole))?.id || 1 : 0;
   const progress = [...recent].reverse().find(e => e.type === 'AGENT_PROGRESS' && activeAgents.some(a => a.role === e.data?.role));
   const badge = waiting ? 'รอคุณอนุมัติ' : running ? 'กำลังทำงาน' : complete ? 'เสร็จสิ้น' : stopped ? 'หยุดแล้ว' : 'พร้อมรับงาน';
 
@@ -50,6 +51,7 @@ export default function SprintPipelineStepper({ agents = [], tasks = [], sprints
         })}
       </div>
       <div className="pipeline-current-work" role="status">
+        {running && latest.source_sprint_id && <div>กำลัง Resume จาก {latest.source_sprint_id} · ใช้ไฟล์ที่พักไว้ ตรวจ QA และ Review ต่อ</div>}
         {waiting ? 'เปิดหน้าต่างอนุมัติเพื่ออ่านแผน แล้วเลือกอนุมัติหรือปฏิเสธ' : stopped ? latest.release_summary : running ? <>
           {activeAgents.map(a => <div key={a.role}><strong>{a.role}</strong> · {a.thought || 'กำลังทำงาน…'}</div>)}
           {progress && !activeAgents.some(a => a.thought === progress.data.message) && <div>{progress.data.message}</div>}

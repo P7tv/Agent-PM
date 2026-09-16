@@ -12,6 +12,15 @@ from app.services.project_manager import ProjectManager
 from app.services.agent_runner import AgentRunner
 from app.models.schemas import TaskStatus, AgentStatus, SprintRecord
 
+from app.services.prompt_builder import handoff_text
+
+def reviewer_excerpt(value, limit=1000):
+    """Keep supporting evidence bounded; Reviewer must inspect actual files."""
+    text = str(value or '')
+    if len(text) <= limit:
+        return text
+    return text[:limit] + '\n[Excerpt truncated. Inspect the actual checkpoint files for the full evidence.]'
+
 class Orchestrator:
     def __init__(self, store: StateStore, project_manager: ProjectManager, agent_runner: AgentRunner):
         self.store = store
@@ -335,7 +344,13 @@ class Orchestrator:
                 self.store.update_sprint(
                     sprint_id, checkpoint_path=execution_workspace,
                     source_sprint_id=source_sprint_id, resume_from=resume_from,
+                    change_evidence={"applied_to_project": False, "project_workspace": workspace},
                 )
+                await event_callback("AGENT_PROGRESS", {
+                    "project_id": project_id,
+                    "role": "TechLead",
+                    "message": f"Agent จะเขียนไฟล์ที่ {execution_workspace} และนำเข้า {workspace} หลังผ่าน QA, Review และการตรวจขั้นสุดท้าย",
+                })
 
             # Build shared sprint context (Team Blackboard)
             sprint_context = dict(meta) if meta else {}
@@ -648,7 +663,7 @@ class Orchestrator:
                 custom_prompt = (
                     f"Sprint Directive: {directive}\n\n"
                     f"Architectural Blueprint:\n{arch_plan}\n\n"
-                    f"Specialist Persona: {ca.thought or ca.skill_title or ca.role}\n\n"
+                    f"Specialist Persona: {ca.persona or ca.display_name or ca.role}\n\n"
                     f"Task for {ca.role}: Implement only the specialist work explicitly required by the plan; preserve unrelated behavior."
                 )
                 t0_ca = time.time()
@@ -712,13 +727,13 @@ class Orchestrator:
             backend_res = results_by_role.get("BackendDev", {"response": "Not required"})
     
             # Update Shared Blackboard with completed specifications
-            sprint_context["design_specs"] = designer_res.get("response", "")
-            sprint_context["backend_specs"] = backend_res.get("response", "")
+            sprint_context["design_specs"] = handoff_text(designer_res)
+            sprint_context["backend_specs"] = handoff_text(backend_res)
             
             specialist_specs = ""
             for ca, _task in custom_tasks:
                 r = results_by_role.get(ca.role, {})
-                specialist_specs += f"--- {ca.role} Specs ---\n{r.get('response', '')}\n\n"
+                specialist_specs += f"--- {ca.role} Specs ---\n{handoff_text(r)}\n\n"
             sprint_context["specialist_specs"] = specialist_specs
     
             aborted = await check_and_handle_abort()
@@ -760,6 +775,7 @@ class Orchestrator:
                 return res
     
             frontend_res = await run_frontend() if t_fe else {"response": "Not required", "tokens_used": 0}
+            sprint_context["frontend_specs"] = handoff_text(frontend_res)
 
             # Documentation is part of the deliverable and therefore runs
             # before QA and review so its edits are covered by both gates.
@@ -770,8 +786,8 @@ class Orchestrator:
                 doc_prompt = (
                     f"Sprint Directive: {directive}\n\n"
                     f"Architectural Plan:\n{arch_plan}\n\n"
-                    f"Backend Implementation:\n{sprint_context.get('backend_specs', '')[:1500]}\n\n"
-                    f"Frontend Implementation:\n{frontend_res.get('response', '')[:1500]}\n\n"
+                    f"Backend Implementation:\n{sprint_context.get('backend_specs', '')}\n\n"
+                    f"Frontend Implementation:\n{handoff_text(frontend_res)}\n\n"
                     "Task for DocWriter: Update only documentation affected by the completed implementation."
                 )
                 t0_doc_res = time.time()
@@ -820,9 +836,9 @@ class Orchestrator:
                     f"Sprint Directive: {directive}\n\n"
                     f"Automated Test Command: {meta.get('test_command') or 'run test suite'}\n\n"
                     f"Architect Acceptance Criteria:\n{sprint_context['acceptance_criteria']}\n\n"
-                    f"Backend Changes:\n{sprint_context.get('backend_specs', '')[:1500]}\n\n"
-                    f"Frontend Changes:\n{frontend_res.get('response', '')[:1500]}\n\n"
-                    f"Specialist Specifications:\n{sprint_context.get('specialist_specs', '')[:1000]}\n\n"
+                    f"Backend Changes:\n{sprint_context.get('backend_specs', '')}\n\n"
+                    f"Frontend Changes:\n{handoff_text(frontend_res)}\n\n"
+                    f"Specialist Specifications:\n{sprint_context.get('specialist_specs', '')}\n\n"
                     f"Task for QATester: Inspect test coverage and acceptance risks without editing files. "
                     f"The orchestrator will run deterministic checks after this analysis. (Attempt {attempt}/{max_retries})"
                 )
@@ -845,6 +861,7 @@ class Orchestrator:
                     await update_agent("QATester", "TESTING", "กำลังตรวจผลด้วยชุดทดสอบจริง")
                     await event_callback("AGENT_PROGRESS", {"project_id": project_id, "role": "QATester", "message": "กำลังรันชุดทดสอบจริงและตรวจ exit code"})
                     verification = await run_verification()
+                    sprint_context["verification_report"] = verification
                     self.store.update_sprint(sprint_id, verification_report={
                         "stage": "QA", "attempt": attempt, **verification,
                     })
@@ -993,19 +1010,20 @@ class Orchestrator:
             staged_diff = await asyncio.to_thread(workspace_session.review_diff) if workspace_session is not None else "Unavailable in simulation"
             self.store.update_sprint(sprint_id, change_evidence={
                 **staged_evidence, "diff": staged_diff,
+                "applied_to_project": False, "project_workspace": workspace,
             })
             self.store.update_task_status(t_rev.task_id, "IN_PROGRESS")
             await update_agent("Reviewer", "REVIEWING", "Auditing security, diff quality, and writing release summary")
             rev_prompt = (
                 f"Sprint Directive: {directive}\n\n"
-                f"Architectural Plan:\n{arch_plan}\n\n"
-                f"Backend Implementation:\n{sprint_context.get('backend_specs', '')[:2000]}\n\n"
-                f"Frontend Implementation:\n{frontend_res.get('response', '')[:2000]}\n\n"
+                f"Architectural Plan:\n{reviewer_excerpt(arch_plan)}\n\n"
+                f"Backend Implementation:\n{reviewer_excerpt(sprint_context.get('backend_specs', ''))}\n\n"
+                f"Frontend Implementation:\n{reviewer_excerpt(handoff_text(frontend_res))}\n\n"
                 f"Documentation:\n{doc_res.get('response', '')[:1000]}\n\n"
-                f"Specialist Specifications:\n{sprint_context.get('specialist_specs', '')[:1000]}\n\n"
+                f"Specialist Specifications:\n{reviewer_excerpt(sprint_context.get('specialist_specs', ''))}\n\n"
                 f"QA Test Results:\n{qa_res.get('response', '')[:1000]}\n\n"
                 f"Changed Files ({len(staged_paths)}):\n" + "\n".join(f"- {path}" for path in staged_paths[:200]) + "\n\n"
-                f"Unified Diff (bounded):\n{staged_diff}\n\n"
+                f"Unified Diff excerpt (full changes are in the actual workspace):\n{reviewer_excerpt(staged_diff, 6000)}\n\n"
                 "Task for Reviewer: Inspect the actual workspace and diff, verify every acceptance criterion, "
                 "audit security and maintainability, and write release notes. Finish with exactly one block:\n"
                 '<review_verdict>{"verdict":"APPROVED|CHANGES_REQUESTED|BLOCKED",'
@@ -1142,12 +1160,13 @@ class Orchestrator:
                 workspace_committed = True
                 self.store.update_sprint(sprint_id, change_evidence={
                     **workspace_changes, "diff": staged_diff,
+                    "applied_to_project": True, "project_workspace": workspace,
                 })
                 await event_callback("WORKSPACE_COMMITTED", {
                     "project_id": project_id,
                     "sprint_id": sprint_id,
                     "changed_files": flatten_changes(workspace_changes),
-                    "summary": f"นำ {len(flatten_changes(workspace_changes))} ไฟล์จาก staged workspace มาใช้แล้ว",
+                    "summary": f"นำ {len(flatten_changes(workspace_changes))} ไฟล์เข้าโปรเจกต์ที่ {workspace} แล้ว",
                 })
 
             # Tech Lead wraps up sprint

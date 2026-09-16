@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 
 const EVENT_CONFIG = {
   AGENT_PROGRESS: { icon: '⏳', badgeCls: 'badge-sky', label: 'ความคืบหน้า' },
+  AGENT_PROMPT_READY: { icon: '📖', badgeCls: 'badge-sky', label: 'Prompt พร้อม' },
   AGENT_ERROR: { icon: '⚠️', badgeCls: 'badge-red', label: 'ข้อผิดพลาด' },
   AGENT_THOUGHT_DELTA: { icon: '💬', badgeCls: 'badge-sky', label: 'อัปเดต' },
   AGENT_STATUS_CHANGE:  { icon: '⚡', badgeCls: 'badge-indigo', label: 'Status' },
@@ -24,6 +25,9 @@ const EVENT_CONFIG = {
 
 function getEventDescription(ev) {
   const d = ev.data || {};
+  if (ev.type === 'AGENT_PROMPT_READY') {
+    return `${d.trace?.execution_mode || 'Agent'} · skills: ${(d.trace?.selected_skills || []).join(', ') || 'core only'}`;
+  }
   if (ev.type === 'AGENT_RESPONSE') {
     const preview = d.response || '(no preview)';
     return `[${d.step_label || 'Task'}] ${preview}`;
@@ -33,6 +37,9 @@ function getEventDescription(ev) {
 
 function EventDetails({ event }) {
   const data = event.data || {};
+  if (event.type === 'AGENT_PROMPT_READY') {
+    return <details><summary>{getEventDescription(event)} — คลิกดูแหล่งข้อมูล</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(data.trace, null, 2)}</pre></details>;
+  }
   if (event.type === 'AGENT_RESPONSE') {
     return <details><summary>{data.step_label || 'ผลการทำงาน'} — คลิกอ่าน</summary><div style={{ whiteSpace: 'pre-wrap' }}>{data.response}</div></details>;
   }

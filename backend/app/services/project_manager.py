@@ -42,11 +42,16 @@ class ProjectManager:
         # 2. Dynamic Subagent Tailoring based on analyzed codebase
         tailored_agents = self.inspector.generate_tailored_roster(meta)
         for agent in tailored_agents:
+            previous = self.store.get_agent_status(project_id, agent["role"])
+            keep_identity = bool(previous.persona and previous.persona_source == "explicit")
             self.store.set_agent_status(
                 project_id=project_id,
                 role=agent["role"],
                 status="IDLE",
                 thought=f"Specialized for {meta.get('stack_type')}: {agent['description']}",
+                display_name=previous.display_name if keep_identity else agent.get("title") or agent["role"],
+                persona=previous.persona if keep_identity else agent["description"],
+                persona_source="explicit" if keep_identity else "generated",
                 skill_name=agent.get("skill_name"),
                 skill_tier=agent.get("skill_tier", "stock"),
                 skill_title=agent.get("title")

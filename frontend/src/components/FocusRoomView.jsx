@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import SprintRecoveryPanel from './SprintRecoveryPanel';
 import { 
   ArrowLeft, 
   Terminal, 
@@ -112,6 +113,7 @@ export default function FocusRoomView({
   onDeleteProject
 }) {
   const toast = useToast();
+  const [stoppingSprint, setStoppingSprint] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -169,6 +171,17 @@ export default function FocusRoomView({
   const [projectSkills, setProjectSkills] = useState([]);
   const [selectedSkillRole, setSelectedSkillRole] = useState(agents[0]?.role || 'TechLead');
   const [skillDetail, setSkillDetail] = useState(null);
+  const [personaText, setPersonaText] = useState('');
+  const [identityName, setIdentityName] = useState('');
+  const [identitySaving, setIdentitySaving] = useState(false);
+  const [promptPreview, setPromptPreview] = useState(null);
+  const [previewMessage, setPreviewMessage] = useState('');
+  const [promptMode, setPromptMode] = useState('');
+  const [promptBusy, setPromptBusy] = useState(false);
+  const [promptTraces, setPromptTraces] = useState(null);
+  const skillRequestRef = useRef(0);
+  const skillContextRef = useRef('');
+  skillContextRef.current = `${project?.project_id}:${selectedSkillRole}`;
   const [skillLoading, setSkillLoading] = useState(false);
   const [isEditingSkill, setIsEditingSkill] = useState(false);
   const [skillEditText, setSkillEditText] = useState('');
@@ -306,18 +319,28 @@ export default function FocusRoomView({
 
   const fetchSkillDetail = async (role) => {
     if (!project?.project_id || !role) return;
+    const context = `${project.project_id}:${role}`;
+    if (context !== skillContextRef.current) return;
+    const requestId = ++skillRequestRef.current;
     setSkillLoading(true);
+    setSkillDetail(null);
     setIsEditingSkill(false);
     setSaveSuccessMsg(null);
+    setPromptPreview(null);
+    setPromptTraces(null);
     try {
       const res = await fetch(`/api/projects/${project.project_id}/skills/${role}`);
       const data = await res.json();
+      if (requestId !== skillRequestRef.current || context !== skillContextRef.current) return;
+      if (!res.ok) throw new Error(data.detail || 'โหลด playbook ไม่สำเร็จ');
       setSkillDetail(data);
+      setPersonaText(data.persona || '');
+      setIdentityName(data.display_name || role);
       setSkillEditText(data.raw_content || data.instructions || '');
     } catch (err) {
-      console.error('Failed to fetch skill detail:', err);
+      if (requestId === skillRequestRef.current && context === skillContextRef.current) toast.error(err.message);
     } finally {
-      setSkillLoading(false);
+      if (requestId === skillRequestRef.current && context === skillContextRef.current) setSkillLoading(false);
     }
   };
 
@@ -331,10 +354,10 @@ export default function FocusRoomView({
     if (activeTab === 'skills' && selectedSkillRole) {
       fetchSkillDetail(selectedSkillRole);
     }
-  }, [activeTab, selectedSkillRole]);
+  }, [activeTab, selectedSkillRole, project?.project_id]);
 
     const handleSaveSkill = async () => {
-    if (!project?.project_id || !selectedSkillRole || savingSkill) return;
+    if (!project?.project_id || !selectedSkillRole || savingSkill || skillDetail?.role !== selectedSkillRole) return;
     setSavingSkill(true);
     try {
       const res = await fetch(`/api/projects/${project.project_id}/skills/${selectedSkillRole}`, {
@@ -343,17 +366,65 @@ export default function FocusRoomView({
         body: JSON.stringify({ content: skillEditText })
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'บันทึก project rules ไม่สำเร็จ');
       if (data.status === 'SUCCESS') {
-        setSaveSuccessMsg('Playbook saved & applied to agent! Changes take effect immediately.');
+        setSaveSuccessMsg('บันทึก Project Rules แล้ว จะใช้ในการเรียก agent ครั้งถัดไป');
         setIsEditingSkill(false);
         fetchProjectSkills();
         fetchSkillDetail(selectedSkillRole);
       }
     } catch (err) {
-      console.error('Failed to save skill:', err);
+      toast.error(err.message);
     } finally {
       setSavingSkill(false);
     }
+  };
+
+  const handleSaveIdentity = async () => {
+    if (identitySaving || !selectedSkillRole || skillDetail?.role !== selectedSkillRole) return;
+    setIdentitySaving(true);
+    try {
+      const res = await fetch(`/api/projects/${project.project_id}/agents/${selectedSkillRole}/identity`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: identityName, persona: personaText })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'ตรวจชื่อและ persona อีกครั้ง');
+      toast.success('บันทึก persona แล้ว ใช้ทั้งการคุยและสั่งงานครั้งถัดไป');
+      setPromptPreview(null);
+      await fetchProjectSkills();
+      await fetchSkillDetail(selectedSkillRole);
+    } catch (error) { toast.error(error.message); }
+    finally { setIdentitySaving(false); }
+  };
+
+  const handlePromptPreview = async () => {
+    if (promptBusy || !selectedSkillRole) return;
+    setPromptBusy(true);
+    const context = skillContextRef.current;
+    try {
+      const res = await fetch(`/api/projects/${project.project_id}/agents/${selectedSkillRole}/prompt-preview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: previewMessage, mode: promptMode || null })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'สร้าง preview ไม่สำเร็จ');
+      if (context === skillContextRef.current) setPromptPreview(data);
+    } catch (error) { toast.error(error.message); }
+    finally { setPromptBusy(false); }
+  };
+
+  const handlePromptTraces = async () => {
+    if (promptBusy || !selectedSkillRole) return;
+    setPromptBusy(true);
+    const context = skillContextRef.current;
+    try {
+      const res = await fetch(`/api/projects/${project.project_id}/agents/${selectedSkillRole}/prompt-traces`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'โหลดประวัติ prompt ไม่สำเร็จ');
+      if (context === skillContextRef.current) setPromptTraces(data);
+    } catch (error) { toast.error(error.message); }
+    finally { setPromptBusy(false); }
   };
 
   const handleRemoveSkill = async (role, skillName) => {
@@ -720,9 +791,19 @@ export default function FocusRoomView({
           {sprints.some(s => s.status === 'RUNNING') && (
             <button
               className="view-btn"
+              disabled={stoppingSprint}
               onClick={async () => {
-                if (window.confirm('Are you sure you want to stop the active sprint?')) {
-                  await fetch(`/api/projects/${project.project_id}/sprints/abort`, { method: 'POST' });
+                if (window.confirm('หยุดรอบงานนี้? ไฟล์ที่เขียนไว้จะเก็บในโฟลเดอร์พักงาน แต่ Resume ได้เฉพาะเมื่อถึงขั้น QA หรือขั้นตรวจหลังจากนั้น')) {
+                  setStoppingSprint(true);
+                  try {
+                    const response = await fetch(`/api/projects/${project.project_id}/sprints/abort`, { method: 'POST' });
+                    if (!response.ok) throw new Error('Stop failed');
+                    toast.success('ส่งคำสั่งหยุดแล้ว กำลังรอ agent หยุดทำงาน');
+                  } catch {
+                    toast.error('สั่งหยุดไม่สำเร็จ ลองอีกครั้ง');
+                  } finally {
+                    setStoppingSprint(false);
+                  }
                 }
               }}
               title="Stop active sprint and halt agents"
@@ -739,7 +820,7 @@ export default function FocusRoomView({
               }}
             >
               <Square size={13} />
-              <span>Stop Sprint</span>
+              <span>{stoppingSprint ? 'กำลังสั่งหยุด…' : 'Stop · หยุดงาน'}</span>
             </button>
           )}
           {(onRequestDelete || onDeleteProject) && (
@@ -773,6 +854,7 @@ export default function FocusRoomView({
 
       {/* Sprint Pipeline Stepper (UI/UX Pro Max) */}
       <SprintPipelineStepper agents={agents} tasks={tasks} sprints={sprints} events={timelineEvents} />
+      <SprintRecoveryPanel sprints={sprints} onResume={onRetrySprint} onStartOver={onRerunSprint} />
 
       {/* Main Focus Room Layout */}
       <div className="focus-room-layout">
@@ -1488,7 +1570,7 @@ export default function FocusRoomView({
                       Agent Playbooks & Operational Skills (SKILL.md)
                     </h4>
                     <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
-                      80% Curated Stock Engineering Standards + 20% Injected Project Context
+                      Core Role + Project Rules + Selected Skills + Project Context
                     </p>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1514,7 +1596,7 @@ export default function FocusRoomView({
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: '14px', minHeight: '380px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', gap: '14px', minHeight: '380px' }}>
                   {/* Left Column: Team Specialists */}
                   <div style={{
                     background: 'var(--bg-canvas)', border: '1px solid var(--border-medium)',
@@ -1530,6 +1612,7 @@ export default function FocusRoomView({
                       return (
                         <button
                           key={ag.role}
+                          disabled={savingSkill || identitySaving || promptBusy}
                           onClick={() => setSelectedSkillRole(ag.role)}
                           style={{
                             background: isSelected ? 'var(--primary)' : 'var(--bg-surface)',
@@ -1541,7 +1624,7 @@ export default function FocusRoomView({
                           }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '12px', fontWeight: '700' }}>{ag.role}</span>
+                            <span style={{ fontSize: '12px', fontWeight: '700' }}>{ag.display_name || ag.role}</span>
                             <span style={{
                               fontSize: '8.5px', fontWeight: '700', padding: '1px 4px', borderRadius: '4px',
                               background: isSelected ? 'rgba(255,255,255,0.25)' : (tier === 'project' ? 'rgba(245,158,11,0.2)' : tier === 'agy' ? 'rgba(16,185,129,0.2)' : 'var(--border-subtle)'),
@@ -1569,7 +1652,7 @@ export default function FocusRoomView({
                         <Loader2 size={28} className="spin" style={{ margin: '0 auto 10px auto', color: 'var(--primary)' }} />
                         <p style={{ fontSize: '13px' }}>Loading agent playbook...</p>
                       </div>
-                    ) : skillDetail ? (
+                    ) : skillDetail?.role === selectedSkillRole ? (
                       <>
                         {(() => {
                           const selectedAgent = projectSkills.find(ag => ag.role === selectedSkillRole) || agents.find(ag => ag.role === selectedSkillRole);
@@ -1578,6 +1661,44 @@ export default function FocusRoomView({
                           
                           return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                              <section aria-label="Agent identity">
+                                <h3 style={{ fontSize: '15px', margin: '0 0 8px' }}>ตัวตนของ Agent</h3>
+                                    {skillDetail.persona_source === 'legacy_title' && <p style={{ fontSize: '12px', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>Persona เดิมถูกสถานะเขียนทับ ระบบใช้ชื่อเดิมเป็นค่าเริ่มต้น<br />กรุณาระบุความเชี่ยวชาญอีกครั้งก่อนสั่งงาน</p>}
+                                <label style={{ display: 'block' }}>ชื่อที่แสดง
+                                  <input value={identityName} maxLength={120} onChange={event => setIdentityName(event.target.value)} style={{ width: '100%', padding: '8px', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-medium)' }} />
+                                </label>
+                                <label style={{ display: 'block', marginTop: '8px' }}>Persona / ความเชี่ยวชาญถาวร
+                                  <textarea value={personaText} maxLength={4000} onChange={event => setPersonaText(event.target.value)} rows={3} style={{ width: '100%', padding: '8px', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-medium)' }} />
+                                </label>
+                                <button className="view-btn active" onClick={handleSaveIdentity} disabled={identitySaving || !identityName.trim() || !personaText.trim()}>{identitySaving ? 'กำลังบันทึก…' : 'บันทึกตัวตน'}</button>
+                              </section>
+                              <section aria-label="Prompt preview">
+                                <h3 style={{ fontSize: '15px', margin: '0 0 8px' }}>ดู Prompt ก่อนเรียก AI</h3>
+                                <p style={{ fontSize: '12px' }}>ใช้ค่าที่บันทึกแล้วและบริบทโปรเจกต์ปัจจุบัน ผลงานระหว่าง Sprint จะเพิ่มตอนทำงานจริง การดู preview ไม่เรียก AI</p>
+                                <label>คำสั่งตัวอย่าง
+                                  <textarea value={previewMessage} maxLength={16000} onChange={event => setPreviewMessage(event.target.value)} rows={2} style={{ width: '100%', padding: '8px', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-medium)' }} />
+                                </label>
+                                <label>โหมด <select value={promptMode} onChange={event => setPromptMode(event.target.value)} style={{ padding: '6px', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-medium)' }}>
+                                  <option value="">ตามบทบาทใน Pipeline</option>
+                                  <option value="consultation">คุยปรึกษา</option>
+                                </select></label>
+                                <button className="view-btn active" onClick={handlePromptPreview} disabled={promptBusy}>{promptBusy ? 'กำลังโหลด…' : 'ดู Prompt และแหล่งข้อมูล'}</button>
+                                <button className="view-btn" onClick={handlePromptTraces} disabled={promptBusy}>ดูประวัติ Prompt ที่ประกอบตอนทำงาน</button>
+                                {promptTraces && <details open>
+                                  <summary>ประวัติ {promptTraces.length} ครั้งล่าสุด — เก็บแหล่งไฟล์และ hash โดยไม่เก็บข้อความ prompt</summary>
+                                  {promptTraces.length === 0 ? <p>ยังไม่มีประวัติหลังอัปเดตระบบ</p> : promptTraces.map(item => <div key={item.trace_id}>
+                                    <p>{new Date(item.created_at * 1000).toLocaleString()} · {item.trace.execution_mode}</p>
+                                    <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(item.trace, null, 2)}</pre>
+                                  </div>)}
+                                </details>}
+                                {promptPreview && <div>
+                                  <p>โหมด: {promptPreview.trace.execution_mode} · {promptPreview.trace.characters.toLocaleString()} ตัวอักษร · Skills ที่เลือก: {promptPreview.trace.selected_skills.join(', ') || 'ไม่มี'}</p>
+                                  {promptPreview.trace.warnings.map(message => <p key={message} role="alert">{message}</p>)}
+                                  {promptPreview.trace.truncated_sections.length > 0 && <p>ส่วนที่ใช้ excerpt: {promptPreview.trace.truncated_sections.join(', ')}</p>}
+                                  <details><summary>ไฟล์และเวอร์ชันที่โหลด</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(promptPreview.trace.sources, null, 2)}</pre></details>
+                                  <details><summary>System Prompt</summary><pre style={{ whiteSpace: 'pre-wrap', maxHeight: '350px', overflow: 'auto' }}>{promptPreview.system_prompt}</pre></details>
+                                </div>}
+                              </section>
                               
                               {/* Performance Metrics Bar */}
                               <div style={{
@@ -1739,7 +1860,7 @@ export default function FocusRoomView({
                                       fontSize: '10px', fontWeight: '700', padding: '2px 7px', borderRadius: '8px',
                                       background: 'var(--primary-subtle)', color: 'var(--primary-text)'
                                     }}>
-                                      CORE ROLE
+                                      {skillDetail.project_rules_applied ? 'PROJECT RULES' : 'CORE REFERENCE'}
                                     </span>
                                   </div>
                                   <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '4px 0 0 0' }}>
@@ -1756,7 +1877,7 @@ export default function FocusRoomView({
                                     </>
                                   ) : (
                                     <button className="view-btn" onClick={() => setIsEditingSkill(true)} style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                      <Edit3 size={13} /><span>Edit Playbook</span>
+                                      <Edit3 size={13} /><span>แก้ Project Rules</span>
                                     </button>
                                   )}
                                 </div>
@@ -1775,6 +1896,11 @@ export default function FocusRoomView({
                                   {skillDetail.instructions || skillDetail.raw_content || 'No instructions specified.'}
                                 </div>
                               )}
+                              <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Project Rules ใช้ทุกครั้งในทั้ง Auto และ Manual โดยเพิ่มกฎของโปรเจกต์จาก core ด้านล่าง ภายใต้ข้อจำกัดของโหมดทำงาน</p>
+                              <details>
+                                <summary>Core Role ถาวร: {skillDetail.core_role_playbook?.title}</summary>
+                                <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '250px', overflow: 'auto' }}>{skillDetail.core_role_playbook?.instructions}</pre>
+                              </details>
                             </div>
                           );
                         })()}

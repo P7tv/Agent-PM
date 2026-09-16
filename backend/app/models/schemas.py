@@ -54,6 +54,9 @@ class AgentState(BaseModel):
     status: AgentStatus = AgentStatus.IDLE
     current_task_id: Optional[str] = None
     thought: str = ""
+    display_name: str = ""
+    persona: str = ""
+    persona_source: str = "explicit"
     last_tool_call: Optional[str] = None
     skill_name: Optional[str] = None
     skill_tier: Optional[str] = "stock"

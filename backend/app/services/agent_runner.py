@@ -15,6 +15,7 @@ except ImportError:
     HAS_ANTIGRAVITY = False
 
 from app.services.skill_manager import SkillManager
+from app.services.prompt_builder import build_prompt, mode_for_role, READ_ONLY_MODES
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -33,18 +34,6 @@ AGY_PATH = (
     or os.path.expanduser("~/AppData/Local/Programs/agy/agy.exe")
 )
 HAS_AGY_CLI = bool(AGY_PATH and os.path.exists(AGY_PATH))
-
-ROLE_PROMPTS = {
-    "TechLead": "You are the project tech lead. Coordinate tasks, resolve architectural blockers, track progress, and report clearly to the PM.",
-    "Architect": "You are a software architect. Break down high-level requirements into clear, isolated tasks.",
-    "Designer": "You are a UI/UX designer. Create CSS design tokens, layouts, and component structures.",
-    "FrontendDev": "You are a senior frontend engineer. Implement UI components and client logic.",
-    "BackendDev": "You are a senior backend engineer. Implement server endpoints and database interactions.",
-    "QATester": "You are a QA automation engineer. Run test suites and report regressions and failures.",
-    "Reviewer": "You are a staff code reviewer. Verify security, code cleanliness, and produce release summaries.",
-    "DocWriter": "You are a technical writer. Produce documentation, READMEs, and API references."
-}
-
 
 class CLIExecutionError(RuntimeError):
     def __init__(self, message, code="CLI_ERROR"):
@@ -105,6 +94,14 @@ class AgentRunner:
         self.skill_manager = skill_manager or SkillManager()
         self.store = store
         self.last_runtime_error = None
+
+    def prepare_prompt(self, project_id, role, workspace_path, prompt="", project_context=None, mode=None):
+        agent = self.store.get_agent_status(project_id, role) if self.store else None
+        bundle = build_prompt(self.skill_manager, role, workspace_path, project_context, agent, prompt, mode)
+        bundle.trace["task_characters"] = len(prompt)
+        if len(bundle.system) + len(prompt) + 1000 > bundle.trace["max_characters"]:
+            raise ValueError("Prompt and required task exceed the context budget; shorten the task or split the directive")
+        return bundle
 
     def runtime_status(self):
         sdk = self.has_api_key and HAS_ANTIGRAVITY
@@ -197,40 +194,25 @@ class AgentRunner:
 
         await emit("AGENT_STATUS_CHANGE", {"status": "THINKING"})
 
-        active_skills = []
-        base_role_skill = self.skill_manager.get_base_role_skill(role)
+        try:
+            bundle = self.prepare_prompt(project_id, role, workspace_path, prompt, project_context)
+        except (ValueError, OSError) as error:
+            await emit("AGENT_STATUS_CHANGE", {"status": "BLOCKED", "thought": str(error)})
+            return {"status": "FAILED", "role": role, "error": str(error), "response": str(error),
+                    "error_code": "PROMPT_INVALID", "tokens_used": 0, "backend_used": "unavailable", "active_skills": []}
+        active_skills = bundle.active_skills
+        await emit("AGENT_PROMPT_READY", {"trace": bundle.trace})
         if self.store:
-            agent_state = self.store.get_agent_status(project_id, role)
-            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL":
-                skills_to_load = getattr(agent_state, "equipped_skills", []) or ([agent_state.skill_name] if getattr(agent_state, "skill_name", None) else [])
-                for s_name in skills_to_load:
-                    try:
-                        active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
-                    except: pass
-            if not active_skills:
-                active_skills = self.skill_manager.match_skills_for_task(
-                    role=role,
-                    task_prompt=prompt,
-                    project_path=workspace_path,
-                    max_skills=2
-                )
-        else:
-            active_skills = self.skill_manager.match_skills_for_task(
-                role=role,
-                task_prompt=prompt,
-                project_path=workspace_path,
-                max_skills=2
-            )
+            self.store.save_prompt_trace(project_id, role, bundle.trace)
+        if bundle.trace["warnings"]:
+            await emit("AGENT_PROGRESS", {"message": "Prompt warnings: " + "; ".join(bundle.trace["warnings"])})
 
         if active_skills:
             skill_titles = ", ".join(s.title for s in active_skills)
             await emit("AGENT_THOUGHT_DELTA", {"thought": f"🎯 Activated Skill Playbook: {skill_titles}"})
 
-        agent_persona = None
-        if self.store:
-            ag_state = self.store.get_agent_status(project_id, role)
-            if ag_state:
-                agent_persona = ag_state.thought or ag_state.skill_title
+        agent_state = self.store.get_agent_status(project_id, role) if self.store else None
+        agent_persona = agent_state.persona if agent_state else None
 
         async def run_contextual_simulation():
             stack = project_context.get("stack_type", "Project") if project_context else "Project"
@@ -240,7 +222,7 @@ class AgentRunner:
             thoughts = [
                 f"Analyzing PM requirements for {role} ({stack})...",
             ]
-            if agent_persona and role not in ROLE_PROMPTS:
+            if agent_persona:
                 thoughts.append(f"Applying specialist persona: {agent_persona}...")
             thoughts.extend([
                 f"Examining workspace files{dir_str} at {workspace_path}...",
@@ -263,41 +245,30 @@ class AgentRunner:
                 "response": f"Completed tasks for: {prompt}",
                 "tokens_used": 0,
                 "backend_used": "mock",
-                "active_skills": [s.name for s in active_skills]
+                "active_skills": [s.name for s in active_skills], "prompt_trace": bundle.trace,
             }
 
         # If explicit test mock requested, run simulation
         if self.use_mock:
             return await run_contextual_simulation()
 
-        system_instruction = self.skill_manager.synthesize_agent_prompt(
-            role=role,
-            project_context=project_context,
-            project_path=workspace_path,
-            base_skill=base_role_skill,
-            active_skills=active_skills
-        )
-        if agent_persona and role not in ROLE_PROMPTS:
-            system_instruction = f"Specialist Persona: {agent_persona}\n\n" + system_instruction
+        system_instruction = bundle.system
         # Planning, design, QA, and review must not mutate the checkout. This
         # keeps verification independent from implementation and prevents an
         # evaluator from silently changing the code it is evaluating.
-        planning_only = role in {"TechLead", "Architect", "Designer", "QATester", "Reviewer"}
-        if planning_only:
-            system_instruction += "\nInspect and report only. Do not edit project files during planning or review."
+        planning_only = mode_for_role(role) in READ_ONLY_MODES
 
         errors = []
         error_code = None
         # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present)
         if self.has_api_key and HAS_ANTIGRAVITY:
             try:
-                system_instruction += f"\nCRITICAL CONSTRAINT: Always operate strictly within {workspace_path}."
                 config = LocalAgentConfig(
                     system_instructions=system_instruction,
                     capabilities=CapabilitiesConfig()
                 )
                 async with Agent(config) as agent:
-                    sdk_prompt = (
+                    sdk_prompt = prompt if planning_only else (
                         f"{prompt}\n\n"
                         f"If you create or update files, output each file using:\n"
                         f"```filename: relative/path/to/file.ext\n<code content>\n```\n"
@@ -331,7 +302,7 @@ class AgentRunner:
                         "response": resp_str,
                         "tokens_used": tokens_used,
                         "backend_used": "sdk",
-                        "active_skills": [s.name for s in active_skills]
+                        "active_skills": [s.name for s in active_skills], "prompt_trace": bundle.trace,
                     }
             except Exception as e:
                 # An SDK may already have edited files. Never replay the task on another backend.
@@ -342,10 +313,11 @@ class AgentRunner:
             try:
                 await emit("AGENT_PROGRESS", {"message": f"เริ่มทำงานด้วย Antigravity CLI: {role}"})
                 full_query = (
-                    f"{system_instruction}\n\nPM Directive: {prompt}\n\n"
-                    "Inspect the existing files before making changes. Implement using workspace tools. "
+                    f"{system_instruction}\n\nPM Directive: {prompt}\n\n" +
+                    ("Inspect and report only; the orchestrator runs deterministic checks. " if planning_only else
+                     "Inspect the existing files before making changes. Implement using workspace tools. ") +
                     "Preserve existing behavior and conventions. Do not return replacement file dumps. "
-                    "Only implement components required by this directive; if your specialty is not needed, "
+                    "Only perform work required by this directive; if your specialty is not needed, "
                     "explain that briefly instead of creating unrelated features or services. "
                     "Report: completed work, changed file paths, checks actually run with results, "
                     "remaining issues, and the handoff for the next agent. Never claim unrun tests passed. "
@@ -357,7 +329,7 @@ class AgentRunner:
                 await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
                 return {"status": "SUCCESS", "role": role, "response": str(text),
                         "tokens_used": getattr(text, "tokens_used", 0) or len(text) // 4, "backend_used": "cli",
-                        "active_skills": [s.name for s in active_skills]}
+                        "active_skills": [s.name for s in active_skills], "prompt_trace": bundle.trace}
             except Exception as e:
                 errors.append(f"CLI: {e}")
                 error_code = getattr(e, "code", "CLI_ERROR")
@@ -388,38 +360,14 @@ class AgentRunner:
         """
         from app.services.console_service import parse_code_proposals
 
-        active_skills = []
-        base_role_skill = self.skill_manager.get_base_role_skill(role)
-        if self.store:
-            agent_state = self.store.get_agent_status(project_id, role)
-            if agent_state and getattr(agent_state, "skill_mode", "AUTO") == "MANUAL":
-                skills_to_load = getattr(agent_state, "equipped_skills", []) or ([agent_state.skill_name] if getattr(agent_state, "skill_name", None) else [])
-                for s_name in skills_to_load:
-                    try:
-                        active_skills.append(self.skill_manager.get_skill(s_name, project_path=workspace_path))
-                    except: pass
-            if not active_skills:
-                active_skills = self.skill_manager.match_skills_for_task(
-                    role=role,
-                    task_prompt=message,
-                    project_path=workspace_path,
-                    max_skills=2
-                )
-        else:
-            active_skills = self.skill_manager.match_skills_for_task(
-                role=role,
-                task_prompt=message,
-                project_path=workspace_path,
-                max_skills=2
-            )
-
-        system_instruction = self.skill_manager.synthesize_agent_prompt(
-            role=role,
-            project_context=project_context,
-            project_path=workspace_path,
-            base_skill=base_role_skill,
-            active_skills=active_skills
-        )
+        try:
+            bundle = self.prepare_prompt(project_id, role, workspace_path, message, project_context, mode="consultation")
+        except (ValueError, OSError) as error:
+            return {"status": "FAILED", "role": role, "error": str(error), "response": str(error),
+                    "error_code": "PROMPT_INVALID", "code_proposals": [], "tokens_used": 0,
+                    "backend_used": "unavailable", "active_skills": []}
+        active_skills = bundle.active_skills
+        system_instruction = bundle.system
 
         attachment_context = ""
         if attachments:
@@ -437,10 +385,20 @@ class AgentRunner:
             f"Workspace: {workspace_path}\n"
             f"Respond in Thai or English naturally."
         )
+        if len(full_prompt) > bundle.trace["max_characters"]:
+            return {"status": "FAILED", "role": role, "response": "Conversation exceeds prompt budget; start a shorter consultation",
+                "error": "Conversation exceeds prompt budget", "error_code": "PROMPT_INVALID", "code_proposals": [],
+                "tokens_used": 0, "backend_used": "unavailable", "active_skills": []}
 
         async def emit(event_type, data):
             if event_callback:
                 await event_callback(event_type, {"project_id": project_id, "role": role, "timestamp": time.time(), **data})
+
+        await emit("AGENT_PROMPT_READY", {"trace": bundle.trace})
+        if self.store:
+            self.store.save_prompt_trace(project_id, role, bundle.trace)
+        if bundle.trace["warnings"]:
+            await emit("AGENT_PROGRESS", {"message": "Prompt warnings: " + "; ".join(bundle.trace["warnings"])})
 
         errors = []
         response_text = ""
@@ -514,5 +472,6 @@ class AgentRunner:
             "code_proposals": code_proposals,
             "tokens_used": tokens_used,
             "backend_used": backend_used,
-            "active_skills": [s.name for s in active_skills]
+            "active_skills": [s.name for s in active_skills],
+            "prompt_trace": bundle.trace,
         }

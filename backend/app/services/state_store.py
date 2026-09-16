@@ -10,6 +10,13 @@ from app.models.schemas import (
 
 from contextlib import contextmanager
 
+def legacy_status_text(text):
+    return any(term in (text or "").lower() for term in (
+        "pipeline", "activated", "executing", "complete", "running", "aborted", "blocked",
+        "responding to pm", "pm whispered", "prompt warnings", "applying specialist", "working on",
+        "กำลัง", "รอ", "ยังไม่เริ่ม", "เริ่มทำงาน",
+    ))
+
 class StateStore:
     def __init__(self, db_path: str = "state.db"):
         self.db_path = db_path
@@ -97,6 +104,40 @@ class StateStore:
             except sqlite3.OperationalError:
                 pass
 
+            identity_migration = False
+            for column, default in (("display_name", "''"), ("persona", "''"), ("persona_source", "'explicit'")):
+                try:
+                    conn.execute(f"ALTER TABLE agent_states ADD COLUMN {column} TEXT DEFAULT {default}")
+                    identity_migration = True
+                except sqlite3.OperationalError:
+                    pass
+            if identity_migration:
+                # Old status text cannot reliably reconstruct a lost description.
+                for project_id, role, title, thought, status in conn.execute(
+                    "SELECT project_id,role,skill_title,thought,status FROM agent_states"
+                ).fetchall():
+                    text = thought or ""
+                    status_text = legacy_status_text(text)
+                    recovered = bool(text and status == "IDLE" and not status_text)
+                    conn.execute(
+                        "UPDATE agent_states SET display_name=?,persona=?,persona_source=? WHERE project_id=? AND role=?",
+                        (title or role, text if recovered else title or role,
+                         "legacy_description" if recovered else "legacy_title", project_id, role),
+                    )
+                for project_id, role, skill_name in conn.execute("""SELECT project_id,role,skill_name FROM agent_states
+                    WHERE skill_mode='MANUAL' AND equipped_skills_json IS NULL AND skill_name IS NOT NULL""").fetchall():
+                    conn.execute("UPDATE agent_states SET equipped_skills_json=? WHERE project_id=? AND role=?",
+                        (json.dumps([skill_name]), project_id, role))
+            # Correct early migration results without touching explicit personas.
+            for project_id, role, title, persona in conn.execute(
+                "SELECT project_id,role,skill_title,persona FROM agent_states WHERE persona_source='legacy_description'"
+            ).fetchall():
+                if legacy_status_text(persona):
+                    conn.execute("UPDATE agent_states SET persona=?,persona_source='legacy_title' WHERE project_id=? AND role=?",
+                        (title or role, project_id, role))
+
+            conn.execute("""CREATE TABLE IF NOT EXISTS agent_prompt_traces (
+                trace_id TEXT PRIMARY KEY,project_id TEXT,role TEXT,trace_json TEXT,created_at REAL)""")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS approvals (
                     request_id TEXT PRIMARY KEY,
@@ -354,16 +395,19 @@ class StateStore:
         current_task_id: Optional[str] = None,
         last_tool_call: Optional[str] = None,
         skill_name: Optional[str] = None,
-        skill_tier: Optional[str] = "stock",
+        skill_tier: Optional[str] = None,
         skill_title: Optional[str] = None,
         equipped_skills: Optional[List[str]] = None,
-        skill_mode: Optional[str] = None
+        skill_mode: Optional[str] = None,
+        display_name: Optional[str] = None,
+        persona: Optional[str] = None,
+        persona_source: Optional[str] = None,
     ):
         now = time.time()
         with self._get_conn() as conn:
             conn.execute("""
-                INSERT INTO agent_states (project_id, role, status, current_task_id, thought, last_tool_call, skill_name, skill_tier, skill_title, equipped_skills_json, skill_mode, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO agent_states (project_id, role, status, current_task_id, thought, last_tool_call, skill_name, skill_tier, skill_title, equipped_skills_json, skill_mode, updated_at,display_name,persona,persona_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, role) DO UPDATE SET
                     status=excluded.status,
                     current_task_id=coalesce(excluded.current_task_id, agent_states.current_task_id),
@@ -374,13 +418,16 @@ class StateStore:
                     skill_title=coalesce(excluded.skill_title, agent_states.skill_title),
                     equipped_skills_json=coalesce(excluded.equipped_skills_json, agent_states.equipped_skills_json),
                     skill_mode=coalesce(excluded.skill_mode, agent_states.skill_mode),
+                    display_name=coalesce(excluded.display_name, agent_states.display_name),
+                    persona=coalesce(excluded.persona, agent_states.persona),
+                    persona_source=coalesce(excluded.persona_source, agent_states.persona_source),
                     updated_at=excluded.updated_at
-            """, (project_id, role, status, current_task_id, thought, last_tool_call, skill_name, skill_tier, skill_title, json.dumps(equipped_skills) if equipped_skills is not None else None, skill_mode, now))
+            """, (project_id, role, status, current_task_id, thought, last_tool_call, skill_name, skill_tier, skill_title, json.dumps(equipped_skills) if equipped_skills is not None else None, skill_mode, now, display_name, persona, persona_source))
             conn.commit()
 
     def get_agent_status(self, project_id: str, role: str) -> AgentState:
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at, skill_name, skill_tier, skill_title, equipped_skills_json, skill_mode FROM agent_states WHERE project_id = ? AND role = ?", (project_id, role))
+            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at, skill_name, skill_tier, skill_title, equipped_skills_json, skill_mode,display_name,persona,persona_source FROM agent_states WHERE project_id = ? AND role = ?", (project_id, role))
             r = cur.fetchone()
             if r:
                 return AgentState(
@@ -392,10 +439,11 @@ class StateStore:
                     last_tool_call=r[5],
                     updated_at=r[6],
                     skill_name=r[7] if len(r) > 7 else None,
-                    skill_tier=r[8] if len(r) > 8 else "stock",
+                    skill_tier=r[8] or "stock",
                     skill_title=r[9] if len(r) > 9 else None,
                     equipped_skills=json.loads(r[10]) if len(r) > 10 and r[10] else [],
-                    skill_mode=r[11] if len(r) > 11 and r[11] else "AUTO"
+                    skill_mode=r[11] if len(r) > 11 and r[11] else "AUTO",
+                    display_name=r[12] or role, persona=r[13] or "", persona_source=r[14] or "explicit",
                 )
         return AgentState(project_id=project_id, role=role)
 
@@ -419,7 +467,7 @@ class StateStore:
 
     def get_all_agent_states(self, project_id: str) -> List[AgentState]:
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at, skill_name, skill_tier, skill_title, equipped_skills_json, skill_mode FROM agent_states WHERE project_id = ? ORDER BY role ASC", (project_id,))
+            cur = conn.execute("SELECT project_id, role, status, current_task_id, thought, last_tool_call, updated_at, skill_name, skill_tier, skill_title, equipped_skills_json, skill_mode,display_name,persona,persona_source FROM agent_states WHERE project_id = ? ORDER BY role ASC", (project_id,))
             return [
                 AgentState(
                     project_id=r[0],
@@ -430,16 +478,43 @@ class StateStore:
                     last_tool_call=r[5],
                     updated_at=r[6],
                     skill_name=r[7] if len(r) > 7 else None,
-                    skill_tier=r[8] if len(r) > 8 else "stock",
+                    skill_tier=r[8] or "stock",
                     skill_title=r[9] if len(r) > 9 else None,
                     equipped_skills=json.loads(r[10]) if len(r) > 10 and r[10] else [],
-                    skill_mode=r[11] if len(r) > 11 and r[11] else "AUTO"
+                    skill_mode=r[11] if len(r) > 11 and r[11] else "AUTO",
+                    display_name=r[12] or r[1], persona=r[13] or "", persona_source=r[14] or "explicit",
                 )
                 for r in cur.fetchall()
             ]
 
     def list_agents(self, project_id: str) -> List[AgentState]:
         return self.get_all_agent_states(project_id)
+
+    def save_prompt_trace(self, project_id, role, trace):
+        with self._get_conn() as conn:
+            conn.execute("INSERT INTO agent_prompt_traces VALUES (?,?,?,?,?)",
+                (str(uuid.uuid4()), project_id, role, json.dumps(trace, ensure_ascii=False), time.time()))
+            conn.execute("""DELETE FROM agent_prompt_traces WHERE project_id=? AND role=? AND trace_id NOT IN
+                (SELECT trace_id FROM agent_prompt_traces WHERE project_id=? AND role=? ORDER BY created_at DESC LIMIT 50)""",
+                (project_id, role, project_id, role))
+            conn.commit()
+
+    def list_prompt_traces(self, project_id, role, limit=10):
+        with self._get_conn() as conn:
+            return [{"trace_id": row[0], "trace": json.loads(row[1]), "created_at": row[2]}
+                for row in conn.execute("SELECT trace_id,trace_json,created_at FROM agent_prompt_traces WHERE project_id=? AND role=? ORDER BY created_at DESC LIMIT ?", (project_id, role, limit))]
+
+    def remove_equipped_skill(self, project_id, role, skill_name):
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT equipped_skills_json FROM agent_states WHERE project_id=? AND role=?", (project_id, role)).fetchone()
+            if not row:
+                raise KeyError(role)
+            equipped = [name for name in json.loads(row[0] or "[]") if name != skill_name]
+            conn.execute("UPDATE agent_states SET equipped_skills_json=?,skill_name=?,updated_at=? WHERE project_id=? AND role=?",
+                (json.dumps(equipped), equipped[-1] if equipped else None, time.time(), project_id, role))
+            conn.commit()
+        return self.get_agent_status(project_id, role)
 
     def add_agent(
         self,
@@ -455,6 +530,9 @@ class StateStore:
             role=role,
             status="IDLE",
             thought=description,
+            display_name=title,
+            persona=description,
+            persona_source="explicit",
             skill_name=skill_name,
             skill_tier=skill_tier or "stock",
             skill_title=title
@@ -466,6 +544,7 @@ class StateStore:
             return False
         with self._get_conn() as conn:
             cur = conn.execute("DELETE FROM agent_states WHERE project_id = ? AND role = ?", (project_id, role))
+            conn.execute("DELETE FROM agent_prompt_traces WHERE project_id=? AND role=?", (project_id, role))
             conn.commit()
             return cur.rowcount > 0
 
@@ -501,6 +580,7 @@ class StateStore:
             conn.execute("DELETE FROM backlog_items WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM project_memories WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_activity_logs WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM agent_prompt_traces WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_sprint_logs WHERE project_id = ?", (project_id,))
             conn.commit()
 

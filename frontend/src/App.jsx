@@ -656,11 +656,17 @@ function AppContent() {
   };
 
   const handleRetrySprint = async (sprint, stage = 'QA') => {
-    await requestJson(`/api/projects/${sprint.project_id}/sprints/${sprint.sprint_id}/retry`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage })
-    });
-    fetchGlobalQueue();
-    toast.success(`นำ checkpoint กลับเข้าคิว เริ่มต่อจาก ${stage}`);
+    try {
+      await requestJson(`/api/projects/${sprint.project_id}/sprints/${sprint.sprint_id}/retry`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage })
+      });
+      fetchGlobalQueue();
+      toast.success(`นำ checkpoint กลับเข้าคิว เริ่มต่อจาก ${stage}`);
+      return true;
+    } catch (error) {
+      toast.error(error.message || 'สั่ง Resume ไม่สำเร็จ');
+      return false;
+    }
   };
 
   const focusedProject = projects.find((p) => p.project_id === focusedProjectId);

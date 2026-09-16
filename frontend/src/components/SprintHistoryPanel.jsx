@@ -82,6 +82,13 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
           const isExpanded = expandedSprintId === sp.sprint_id;
           const tasks = sprintTasks[sp.sprint_id] || [];
           const isLoading = loadingTasks[sp.sprint_id];
+          const changedFileCount = ['added', 'modified', 'deleted'].reduce(
+            (total, kind) => total + (sp.change_evidence?.[kind]?.length || 0), 0,
+          );
+          // Older runs predate the explicit commit flag; completed staged runs
+          // reached commit, while failed runs keep their checkpoint for retry.
+          const filesApplied = sp.change_evidence?.applied_to_project
+            ?? (sp.status === 'COMPLETED' && Boolean(sp.checkpoint_path));
 
           return (
             <div key={sp.sprint_id} className={`sprint-card ${isExpanded ? 'sprint-card-expanded' : ''}`}>
@@ -124,14 +131,25 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
                     </button>
                   )}
                   {onRetry && ['FAILED', 'REJECTED'].includes(sp.status) && sp.checkpoint_path && ['QA', 'REVIEWER', 'FINAL'].includes(sp.execution_plan?.checkpoint_stage) && (
-                    <button className="sprint-rerun-btn" onClick={() => onRetry(sp, 'QA')} title="Continue from preserved staged changes">
-                      ▶ Resume QA
+                    <button className="sprint-rerun-btn" onClick={() => onRetry(sp, 'QA')} title="ตรวจ QA และ Review ต่อจากไฟล์ที่เก็บไว้ แล้วนำเข้าโปรเจกต์เมื่อผ่านขั้นตรวจ">
+                      ▶ ตรวจต่อและนำไฟล์ไปใช้
                     </button>
                   )}
                 </div>
               </div>
 
               <div className="sprint-directive-text">{sp.directive}</div>
+
+              {sp.checkpoint_path && (
+                <div className="sprint-release-summary">
+                  <strong>{filesApplied ? 'ไฟล์ถูกนำเข้าโปรเจกต์แล้ว' : 'ไฟล์ยังอยู่ในโฟลเดอร์พักงาน — ยังไม่นำเข้าโปรเจกต์'}</strong>
+                  {changedFileCount > 0 && <div>ไฟล์ที่เพิ่ม แก้ไข หรือลบ: {changedFileCount} ไฟล์ (ดูรายการที่ Tasks)</div>}
+                  <div style={{ overflowWrap: 'anywhere' }}>
+                    ตำแหน่ง: <code>{filesApplied ? (sp.change_evidence?.project_workspace || 'โฟลเดอร์โปรเจกต์ที่ลงทะเบียน') : sp.checkpoint_path}</code>
+                  </div>
+                  {!filesApplied && <div>ระบบนำไฟล์เข้าโปรเจกต์หลังผ่าน QA, Review และการตรวจขั้นสุดท้าย หากหยุดหรือยกเลิก งานจะยังอยู่ในโฟลเดอร์พักงาน</div>}
+                </div>
+              )}
 
               {sp.release_summary && (
                 <div className="sprint-release-summary">
@@ -154,7 +172,7 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
                       {(sp.verification_report?.checks || []).map((check, index) => <div key={index}>{check.status === 'PASSED' ? '✅' : check.status === 'WARNING' ? '⚠️' : '❌'} {check.name}</div>)}
                     </section>
                     <section>
-                      <strong>Changed files</strong>
+                      <strong>{filesApplied ? 'Applied file changes' : 'Staged file changes (ยังไม่นำเข้าโปรเจกต์)'}</strong>
                       {['added', 'modified', 'deleted'].flatMap(kind => (sp.change_evidence?.[kind] || []).map(path => <div key={`${kind}-${path}`}><code>{kind}</code> {path}</div>))}
                     </section>
                     <section>

@@ -76,7 +76,56 @@ async def _stop_preview(project_id: str):
             await asyncio.to_thread(process.wait, 5)
 
 class SkillUpdateRequest(BaseModel):
-    content: str
+    content: str = Field(min_length=1, max_length=512 * 1024)
+
+class AgentIdentityRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+    persona: str = Field(min_length=1, max_length=4000)
+
+class PromptPreviewRequest(BaseModel):
+    message: str = Field(default="", max_length=16000)
+    mode: Optional[Literal["consultation", "planning", "design", "implementation", "verification-analysis", "review"]] = None
+
+def registered_agent(project_id, role):
+    if not store.get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    agent = next((item for item in store.list_agents(project_id) if item.role == role), None)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+def required_skill(name, workspace):
+    try:
+        return skill_manager.get_skill(name, workspace, required=True)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+@router.put("/projects/{project_id}/agents/{role}/identity")
+async def update_agent_identity(project_id: str, role: str, req: AgentIdentityRequest):
+    agent = registered_agent(project_id, role)
+    if not req.display_name.strip() or not req.persona.strip():
+        raise HTTPException(status_code=400, detail="Name and persona must not be blank")
+    store.set_agent_status(project_id, role, agent.status.value, thought=agent.thought,
+        display_name=req.display_name.strip(), persona=req.persona.strip(), persona_source="explicit")
+    updated = store.get_agent_status(project_id, role)
+    await hub.broadcast("AGENT_STATE_UPDATE", updated.model_dump(mode="json"))
+    return updated
+
+@router.post("/projects/{project_id}/agents/{role}/prompt-preview")
+def preview_agent_prompt(project_id: str, role: str, req: PromptPreviewRequest):
+    registered_agent(project_id, role)
+    project = store.get_project(project_id)
+    try:
+        bundle = runner.prepare_prompt(project_id, role, project.workspace_path, req.message,
+            store.get_project_metadata(project_id), mode=req.mode)
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"system_prompt": bundle.system, "trace": bundle.trace}
+
+@router.get("/projects/{project_id}/agents/{role}/prompt-traces")
+def get_agent_prompt_traces(project_id: str, role: str):
+    registered_agent(project_id, role)
+    return store.list_prompt_traces(project_id, role)
 
 class CreateProjectRequest(BaseModel):
     project_id: str
@@ -257,6 +306,13 @@ async def retry_sprint(project_id: str, sprint_id: str, req: RetrySprintRequest)
     plan = sprint.execution_plan or {}
     if plan.get("checkpoint_stage") not in {"QA", "REVIEWER", "FINAL"}:
         raise HTTPException(status_code=409, detail="Implementation did not finish. Re-run the directive instead of resuming QA.")
+    if sprint.change_evidence.get("applied_to_project") is True:
+        raise HTTPException(status_code=409, detail="Checkpoint changes have already been applied to the project.")
+    if any(item.status == "RUNNING" for item in store.get_sprints(project_id)):
+        raise HTTPException(status_code=409, detail="This project already has an active sprint. Wait for it to finish before resuming.")
+    for pending in sprint_queue.list_queue(project_id):
+        if pending.source_sprint_id == sprint_id:
+            return pending
     item = sprint_queue.enqueue(
         project_id, sprint.directive,
         acceptance_criteria=plan.get("acceptance_criteria", []),
@@ -967,6 +1023,7 @@ def get_project_skills(project_id: str):
                 "description": base_role_skill.description,
             } if base_role_skill else None,
             "skill_mode": getattr(a, "skill_mode", "AUTO"),
+            "display_name": a.display_name, "persona": a.persona, "persona_source": a.persona_source,
             "equipped_skills": getattr(a, "equipped_skills", [])
         })
     return result
@@ -977,6 +1034,8 @@ def get_agent_skill(project_id: str, role: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     skill = skill_manager.get_skill(role, project_path=p.workspace_path)
+    core = skill_manager.get_base_role_skill(role)
+    identity = registered_agent(project_id, role)
     return {
         "name": skill.name,
         "title": skill.title,
@@ -986,7 +1045,11 @@ def get_agent_skill(project_id: str, role: str):
         "tier": skill.tier,
         "instructions": skill.instructions,
         "raw_content": skill.raw_content,
-        "file_path": skill.file_path
+        "file_path": skill.file_path,
+        "core_role_playbook": {"name": core.name, "title": core.title, "instructions": core.instructions, "file_path": core.file_path},
+        "project_rules_applied": skill_manager.get_project_role_skill(role, p.workspace_path) is not None,
+        "diagnostics": dict(skill_manager.diagnostics),
+        "role": identity.role, "display_name": identity.display_name, "persona": identity.persona, "persona_source": identity.persona_source,
     }
 
 @router.put("/projects/{project_id}/skills/{role}")
@@ -994,20 +1057,13 @@ def update_agent_skill(project_id: str, role: str, req: SkillUpdateRequest):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
-    saved_path = skill_manager.save_custom_skill(
-        project_path=p.workspace_path,
-        role=role,
-        content=req.content
-    )
+    registered_agent(project_id, role)
+    try:
+        saved_path = skill_manager.save_custom_skill(project_path=p.workspace_path, role=role, content=req.content)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     skill = skill_manager.get_skill(role, project_path=p.workspace_path)
-    store.set_agent_status(
-        project_id=project_id,
-        role=role,
-        status="IDLE",
-        skill_name=skill.name,
-        skill_tier="project",
-        skill_title=skill.title
-    )
+    # Project rules apply independently of operational selection and live status.
     return {"status": "SUCCESS", "file_path": saved_path, "tier": "project"}
 
 @router.post("/skills/download")
@@ -1051,11 +1107,11 @@ def assign_skill_to_agent(project_id: str, role: str, req: AssignSkillRequest):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    agent = store.get_agent_status(project_id, role)
+    agent = registered_agent(project_id, role)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{role}' not found in project '{project_id}'")
 
-    skill = skill_manager.get_skill(req.skill_name, project_path=p.workspace_path)
+    skill = required_skill(req.skill_name, p.workspace_path)
     updated_state = store.assign_agent_skill(
         project_id=project_id,
         role=role,
@@ -1096,10 +1152,11 @@ def add_agent_skill(project_id: str, role: str, req: SkillAddRequest):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    agent = store.get_agent_status(project_id, role)
+    agent = registered_agent(project_id, role)
+    skill = required_skill(req.skill_name, p.workspace_path)
     equipped = agent.equipped_skills or []
-    if req.skill_name not in equipped:
-        equipped.append(req.skill_name)
+    if skill.name not in equipped:
+        equipped.append(skill.name)
     
     store.set_agent_status(
         project_id=project_id,
@@ -1122,29 +1179,9 @@ def remove_agent_skill(project_id: str, role: str, req: SkillRemoveRequest):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    agent = store.get_agent_status(project_id, role)
-    equipped = agent.equipped_skills or []
-    if req.skill_name in equipped:
-        equipped.remove(req.skill_name)
-    
-    mode = agent.skill_mode
-    if not equipped:
-        mode = "AUTO"
-        
-    store.set_agent_status(
-        project_id=project_id,
-        role=role,
-        status=agent.status.value,
-        thought=agent.thought,
-        current_task_id=agent.current_task_id,
-        last_tool_call=agent.last_tool_call,
-        skill_name=agent.skill_name,
-        skill_tier=agent.skill_tier,
-        skill_title=agent.skill_title,
-        equipped_skills=equipped,
-        skill_mode=mode
-    )
-    return {"status": "SUCCESS", "equipped_skills": equipped, "skill_mode": mode}
+    registered_agent(project_id, role)
+    agent = store.remove_equipped_skill(project_id, role, req.skill_name)
+    return {"status": "SUCCESS", "equipped_skills": agent.equipped_skills, "skill_mode": agent.skill_mode}
 
 @router.post("/projects/{project_id}/agents/{role}/skills/set-mode")
 def set_agent_skill_mode(project_id: str, role: str, req: SetSkillModeRequest):
@@ -1155,7 +1192,7 @@ def set_agent_skill_mode(project_id: str, role: str, req: SetSkillModeRequest):
     if req.mode not in ["AUTO", "MANUAL"]:
         raise HTTPException(status_code=400, detail="Mode must be AUTO or MANUAL")
     
-    agent = store.get_agent_status(project_id, role)
+    agent = registered_agent(project_id, role)
     store.set_agent_status(
         project_id=project_id,
         role=role,

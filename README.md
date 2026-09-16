@@ -145,6 +145,10 @@ preview:
 - ระบบ production จะรายงานข้อผิดพลาดเมื่อ AI ใช้งานไม่ได้ ไม่มีการจำลองงานแล้วแสดงว่าสร้างเสร็จ
 - `AGENT_EFFORT=high` และ `AGENT_TIMEOUT_SECONDS=600` เป็นค่าเริ่มต้น ปรับได้ใน `.env` แล้ว restart backend
 - CLI ส่งอัปเดตเวลารอทุกประมาณ 10 วินาที การรายงานนี้หมายถึง process ยังรอผล ไม่ใช่หลักฐานว่าเขียนไฟล์หรือทดสอบผ่านแล้ว
+- Team & Skills แยกตัวตนถาวร (persona), Core Role และ Project Rules; การคุยและ Pipeline ใช้ prompt builder เดียวกัน Manual ที่ไม่มี skill ใช้ core และ project rules เท่านั้น ไม่เปลี่ยนไป Auto เอง
+- กฎร่วมอยู่ที่ `backend/agents/SYSTEM.md`; Core Role อยู่ใน `backend/skills/`; Project Rules อยู่ที่ `<workspace>/.agents/skills/<role>/SKILL.md` และ root `AGENTS.md` ใช้ทั้ง SDK และ CLI ปุ่ม Preview ไม่เรียก AI และแสดงไฟล์/hash/คำเตือน/ส่วนที่ใช้ excerpt ส่วนประวัติ prompt เก็บเฉพาะ trace ล่าสุด 50 ครั้งต่อ agent
+- `AGENT_PROMPT_MAX_CHARS=48000` กำหนดงบบริบทเป็นตัวอักษร ไม่ใช่ token; ข้อมูลส่งต่อแบบ `<agent_handoff>` เก็บ API/schema contract โดยไม่ตัดกลางข้อมูล บริบทที่จำเป็นเกินงบจะรายงาน error ให้แบ่งงาน Project Rules และ root `AGENTS.md` จำกัด 6000 ตัวอักษร; Markdown reference ใน skill โหลดสูงสุด 3 ไฟล์ในโฟลเดอร์ skill โดยไม่รัน scripts
+- `allowed_tools` / `allowed-tools` เป็น metadata แนะนำวิธีทำงาน ไม่ใช่สิทธิ์ของ runtime; ขั้น consultation/planning/design/QA analysis/review ใช้ข้อจำกัด read-only และให้ orchestrator รัน checks จริง Persona เก่าที่ถูกเขียนทับไปแล้วใช้ชื่อเดิมเป็นค่าเริ่มต้น และแสดงให้แก้ใน Team & Skills
 - CLI รับผลแบบ JSON และตรวจ status แม้ exit code เป็น 0; ขั้นวางแผนปิด slash-command expansion และใช้เครื่องมืออ่านไฟล์ หากไม่มีคำตอบหรือหยุดที่ tool permission จะลองอีกครั้งแบบไม่ใช้เครื่องมือได้ 1 รอบภายใน timeout เดิม ส่วนขั้น implementation จะไม่ replay อัตโนมัติ เพราะอาจแก้ไฟล์ไปแล้ว
 - Agent ที่แก้ไฟล์ทำงานตามลำดับใน staged workspace; ระบบตรวจ conflict ก่อนนำผลกลับเข้า workspace หลัก
 - QA ตรวจ process exit code รองรับ npm scripts (`test`, `typecheck`, `check`, `lint`, `build`), pytest, Go และ Cargo ทั้งที่ root และ package ชั้นแรกของ monorepo หากไม่พบ check จะแจ้ง `NOT_RUN` และไม่ถือว่าผ่าน
