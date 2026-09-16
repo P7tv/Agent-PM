@@ -119,7 +119,25 @@ PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 4. เอกสารที่เกี่ยวข้องจะอัปเดตก่อนตรวจคุณภาพ
 5. **QA แบบ read-only** รัน test, typecheck/check, lint และ build ที่ตรวจพบ หากล้มเหลวจะส่งผลพร้อม path กลับไปยังเจ้าของงานและลองแก้ได้สูงสุด 3 รอบ งานเอกสารล้วนสามารถผ่านพร้อมสถานะ `NOT_RUN` ได้
 6. **Reviewer แบบ read-only** ตรวจ acceptance criteria, unified diff และผล QA โดยต้องคืน verdict ที่ระบบอ่านได้ หากขอแก้ ระบบให้เจ้าของงานแก้และตรวจซ้ำได้อีก 1 รอบก่อน block
-7. ระบบรัน verification รอบสุดท้าย แล้วจึงนำไฟล์จาก staged workspace กลับเข้าโปรเจกต์พร้อมกัน หาก sprint ล้มเหลวไฟล์ครึ่งงานจะไม่ถูกนำมาใช้
+7. ระบบรัน verification รอบสุดท้าย แล้วจึงนำไฟล์จาก staged workspace กลับเข้าโปรเจกต์พร้อมกัน หาก sprint ล้มเหลวไฟล์ครึ่งงานจะไม่ถูกนำมาใช้ แต่ checkpoint จะถูกเก็บไว้ให้กด **Resume QA** หลังแก้สาเหตุได้
+
+### Project verification config
+
+คัดลอก [`.agent-pm.yml.example`](.agent-pm.yml.example) เป็น `.agent-pm.yml` ใน workspace ที่ลงทะเบียน เพื่อกำหนดคำสั่ง test/build, timeout, preview URL และ path ที่ห้าม Agent แก้ ระบบรันคำสั่งโดยไม่ผ่าน shell และไม่ยอมให้ `cwd` ออกนอก workspace
+
+```yaml
+verification:
+  checks:
+    - name: backend tests
+      command: [python, -m, pytest, -q]
+      kind: test
+      required: true
+protected_paths: [.env, secrets/]
+preview:
+  url: http://127.0.0.1:5173
+```
+
+ในช่องสั่งงาน กด **Criteria** เพื่อเพิ่ม acceptance criteria และ protected paths สำหรับ sprint นั้นโดยตรง ประวัติ Sprint จะแสดง report ที่ประกอบด้วยแผน ผลตรวจ ไฟล์ที่เปลี่ยน unified diff และ reviewer verdict และ export เป็น Markdown ได้
 
 ### Runtime และคุณภาพงาน
 
@@ -132,6 +150,15 @@ PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 - Auto-Pilot จะหยุดทันทีเมื่อ QA ยังไม่ผ่านหลังครบจำนวนครั้ง ส่วน Gate Mode จะเปิดให้ PM ตัดสินใจรับความเสี่ยง ผลทดสอบอัตโนมัติยังไม่แทนการตรวจ UX ด้วยมนุษย์
 - Directive ที่ค้างใน queue จะกลับมาทำต่ออัตโนมัติหลัง backend restart ส่วน sprint ที่กำลังรันตอน process หยุดจะถูกปิดเป็น failed เพื่อไม่รายงานสถานะค้าง
 - Queue เรียง `URGENT → HIGH → NORMAL → LOW`; การเลื่อนขึ้นลงทำงานภายใน priority เดียวกัน
+- Gate Mode รองรับ **ขอแก้แผน** พร้อม feedback ซึ่งส่งกลับให้ Architect ปรับแผนก่อนเริ่ม implementation
+- กดกระดิ่งบน header เพื่อรับ desktop notification เมื่อรออนุมัติ งานเสร็จ หรือ pipeline หยุด
 - CLI ลงมือทำงานด้วยสิทธิ์ของผู้ใช้ในเครื่องตามการตั้งค่าเดิมของแอป ใช้กับ workspace ที่ตั้งใจให้ agent แก้ไข
+
+Frontend visual smoke test ใช้ Chrome จริง ตรวจ DOM หลัง render และบันทึกภาพไว้ที่ `frontend/test-results/dashboard.png`:
+
+```bash
+cd frontend
+npm run test:e2e
+```
 
 หลังแก้ frontend ให้รัน `cd frontend && npm run build` แล้ว restart `python start_dashboard.py` เพื่อใช้ backend เวอร์ชันใหม่ด้วย

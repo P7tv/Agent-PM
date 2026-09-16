@@ -103,6 +103,7 @@ export default function FocusRoomView({
   initialTab = 'mission-hub',
   onTabChange,
   onRerunSprint,
+  onRetrySprint,
   onBack, 
   onAgentClick, 
   onSendWhisper,
@@ -191,6 +192,34 @@ export default function FocusRoomView({
   const [agentMetrics, setAgentMetrics] = useState({});
   const [recentActivities, setRecentActivities] = useState([]);
   const [showActivityLog, setShowActivityLog] = useState(false);
+  const [projectConfig, setProjectConfig] = useState(null);
+  const [previewRunning, setPreviewRunning] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+
+  useEffect(() => {
+    fetch(`/api/projects/${project.project_id}/config`)
+      .then(res => res.ok ? res.json() : null)
+      .then(setProjectConfig)
+      .catch(() => setProjectConfig(null));
+    fetch(`/api/projects/${project.project_id}/preview`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => setPreviewRunning(Boolean(data?.running)))
+      .catch(() => setPreviewRunning(false));
+  }, [project.project_id]);
+
+  const togglePreview = async () => {
+    setPreviewBusy(true);
+    try {
+      const response = await fetch(`/api/projects/${project.project_id}/preview`, { method: previewRunning ? 'DELETE' : 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Preview action failed');
+      setPreviewRunning(Boolean(data.running));
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
 
   // Computed thinking agents
   const thinkingAgents = (agents || []).filter(a => a.status === 'THINKING');
@@ -642,6 +671,17 @@ export default function FocusRoomView({
           <h2 className="focus-header-title">{project.name}</h2>
         </div>
         <div className="focus-header-actions">
+
+          {projectConfig?.preview?.url && (
+            <>
+              <button className="view-btn" onClick={togglePreview} disabled={previewBusy} title="Start or stop the configured preview process">
+                {previewRunning ? <Square size={13} /> : <Play size={14} />} <span>{previewBusy ? 'Working…' : previewRunning ? 'Stop Preview' : 'Start Preview'}</span>
+              </button>
+              {previewRunning && <a className="view-btn" href={projectConfig.preview.url} target="_blank" rel="noreferrer" title="Open the configured app preview">
+                <Play size={14} /> <span>Open Preview</span>
+              </a>}
+            </>
+          )}
 
           <button
             className="view-btn"
@@ -1388,7 +1428,7 @@ export default function FocusRoomView({
                 </div>
 
                 {sprintSubView === 'history' ? (
-                  <SprintHistoryPanel sprints={sprints || []} onRerun={onRerunSprint} />
+                  <SprintHistoryPanel sprints={sprints || []} onRerun={onRerunSprint} onRetry={onRetrySprint} />
                 ) : (
                   <div style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>

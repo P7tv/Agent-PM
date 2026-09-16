@@ -12,8 +12,18 @@ class SprintQueue:
         # Track active drain workers per project: { project_id: asyncio.Task }
         self._workers: Dict[str, asyncio.Task] = {}
 
-    def enqueue(self, project_id: str, directive: str, priority: str = "NORMAL") -> QueueItem:
-        item = self.store.enqueue_directive(project_id, directive, priority=priority)
+    def enqueue(
+        self, project_id: str, directive: str, priority: str = "NORMAL",
+        acceptance_criteria: Optional[List[str]] = None,
+        protected_paths: Optional[List[str]] = None,
+        source_sprint_id: Optional[str] = None,
+        resume_from: Optional[str] = None,
+    ) -> QueueItem:
+        item = self.store.enqueue_directive(
+            project_id, directive, priority=priority,
+            acceptance_criteria=acceptance_criteria, protected_paths=protected_paths,
+            source_sprint_id=source_sprint_id, resume_from=resume_from,
+        )
         self._ensure_worker(project_id)
         return item
 
@@ -62,7 +72,11 @@ class SprintQueue:
                     res = await self.orchestrator.execute_pm_directive(
                         project_id=project_id,
                         directive=item.directive,
-                        event_callback=self.broadcast_fn
+                        event_callback=self.broadcast_fn,
+                        acceptance_criteria=item.acceptance_criteria,
+                        protected_paths=item.protected_paths,
+                        source_sprint_id=item.source_sprint_id,
+                        resume_from=item.resume_from,
                     )
                     final_status = res.get("status", "COMPLETED") if res else "COMPLETED"
                     if final_status in ["COMPLETED", "SUCCESS"]:

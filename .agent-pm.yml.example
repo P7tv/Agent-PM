@@ -1,0 +1,24 @@
+# Copy this file to .agent-pm.yml inside any managed project.
+verification:
+  timeout_seconds: 180
+  checks:
+    - name: backend tests
+      command: [python, -m, pytest, -q]
+      cwd: backend
+      kind: test
+      required: true
+    - name: frontend build
+      command: [npm, run, build]
+      cwd: frontend
+      kind: build
+      required: true
+
+preview:
+  command: [npm, run, dev, "--", --host, 127.0.0.1]
+  cwd: frontend
+  url: http://127.0.0.1:5173
+  ready_path: /
+
+protected_paths:
+  - .env
+  - secrets/

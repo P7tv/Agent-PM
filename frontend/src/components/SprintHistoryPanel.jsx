@@ -19,7 +19,7 @@ const ROLE_ICONS = {
   DocWriter: '📝'
 };
 
-export default function SprintHistoryPanel({ sprints = [], onRerun }) {
+export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
   const [expandedSprintId, setExpandedSprintId] = useState(null);
   const [sprintTasks, setSprintTasks] = useState({});
   const [loadingTasks, setLoadingTasks] = useState({});
@@ -70,6 +70,11 @@ export default function SprintHistoryPanel({ sprints = [], onRerun }) {
         <span className="sprint-history-header-title">
           Sprint History ({sprints.length})
         </span>
+        <div className="sprint-history-totals">
+          <span>🪙 {sprints.reduce((sum, sprint) => sum + (sprint.total_tokens || 0), 0).toLocaleString()} tokens</span>
+          <span>⏱ {Math.round(sprints.reduce((sum, sprint) => sum + (sprint.completed_at ? sprint.completed_at - sprint.started_at : 0), 0))}s</span>
+          <span>≈ ${(sprints.reduce((sum, sprint) => sum + (sprint.total_tokens || 0), 0) * 0.000001).toFixed(3)}</span>
+        </div>
       </div>
       <div className="sprint-history-list">
         {sprints.map((sp) => {
@@ -118,6 +123,11 @@ export default function SprintHistoryPanel({ sprints = [], onRerun }) {
                       ↺ Re-run
                     </button>
                   )}
+                  {onRetry && ['FAILED', 'REJECTED'].includes(sp.status) && sp.checkpoint_path && (
+                    <button className="sprint-rerun-btn" onClick={() => onRetry(sp, 'QA')} title="Continue from preserved staged changes">
+                      ▶ Resume QA
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -133,6 +143,27 @@ export default function SprintHistoryPanel({ sprints = [], onRerun }) {
               {/* Granular Task Breakdown Accordion */}
               {isExpanded && (
                 <div className="sprint-tasks-breakdown">
+                  <div className="sprint-report-grid">
+                    <section>
+                      <strong>Acceptance criteria</strong>
+                      {(sp.execution_plan?.acceptance_criteria || []).length ? <ul>{sp.execution_plan.acceptance_criteria.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>No criteria recorded</p>}
+                    </section>
+                    <section>
+                      <strong>Verification</strong>
+                      <p>{sp.verification_report?.status || 'Not recorded'} {sp.verification_report?.stage ? `(${sp.verification_report.stage})` : ''}</p>
+                      {(sp.verification_report?.checks || []).map((check, index) => <div key={index}>{check.status === 'PASSED' ? '✅' : check.status === 'WARNING' ? '⚠️' : '❌'} {check.name}</div>)}
+                    </section>
+                    <section>
+                      <strong>Changed files</strong>
+                      {['added', 'modified', 'deleted'].flatMap(kind => (sp.change_evidence?.[kind] || []).map(path => <div key={`${kind}-${path}`}><code>{kind}</code> {path}</div>))}
+                    </section>
+                    <section>
+                      <strong>Review verdict</strong>
+                      <p>{sp.review_verdict?.verdict || 'Not recorded'}</p>
+                      {(sp.review_verdict?.findings || []).map((item, index) => <div key={index}>• {item}</div>)}
+                    </section>
+                  </div>
+                  {sp.change_evidence?.diff && <details className="sprint-diff"><summary>Review unified diff</summary><pre>{sp.change_evidence.diff}</pre></details>}
                   <div className="sprint-tasks-header">
                     <span>Task Execution Details ({tasks.length || sp.tasks_count || 0})</span>
                   </div>

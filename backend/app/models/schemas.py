@@ -101,6 +101,13 @@ class SprintRecord(BaseModel):
     completed_at: Optional[float] = None
     tasks_count: int = 0
     release_summary: Optional[str] = None
+    execution_plan: Dict[str, Any] = Field(default_factory=dict)
+    verification_report: Dict[str, Any] = Field(default_factory=dict)
+    change_evidence: Dict[str, Any] = Field(default_factory=dict)
+    review_verdict: Dict[str, Any] = Field(default_factory=dict)
+    checkpoint_path: Optional[str] = None
+    source_sprint_id: Optional[str] = None
+    resume_from: Optional[str] = None
 
 class QueueItem(BaseModel):
     queue_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -110,6 +117,10 @@ class QueueItem(BaseModel):
     position: int = 0
     priority: str = "NORMAL"  # URGENT | HIGH | NORMAL | LOW
     created_at: float = Field(default_factory=time.time)
+    acceptance_criteria: List[str] = Field(default_factory=list)
+    protected_paths: List[str] = Field(default_factory=list)
+    source_sprint_id: Optional[str] = None
+    resume_from: Optional[str] = None
 
 class BacklogItem(BaseModel):
     item_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -172,4 +183,3 @@ class CustomAgentCreateRequest(BaseModel):
 
 class AutoGenerateRosterRequest(BaseModel):
     replace_existing: bool = True
-

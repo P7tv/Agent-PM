@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useToast } from './Toast';
-import { Send, TerminalSquare, Sparkles, ChevronDown, ListTodo, BookMarked } from 'lucide-react';
+import { Send, TerminalSquare, Sparkles, ChevronDown, ListTodo, BookMarked, SlidersHorizontal } from 'lucide-react';
 
 const DIRECTIVE_TEMPLATES = [
   { label: 'Feature: Auth', text: 'Implement user authentication with login, registration, JWT tokens, and password hashing.' },
@@ -27,14 +27,22 @@ export default function PMCommandBar({
   const [directive, setDirective] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showCriteria, setShowCriteria] = useState(false);
+  const [criteriaText, setCriteriaText] = useState('');
+  const [protectedText, setProtectedText] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!directive.trim() || !activeProjectId) return;
     setIsSubmitting(true);
     try {
-      await onDispatchDirective(activeProjectId, directive);
+      const lines = value => value.split('\n').map(item => item.trim()).filter(Boolean);
+      await onDispatchDirective(activeProjectId, directive, {
+        acceptance_criteria: lines(criteriaText),
+        protected_paths: lines(protectedText),
+      });
       setDirective('');
+      setCriteriaText('');
     } catch (error) {
       toast.error(error.message);
     } finally {
@@ -92,7 +100,16 @@ export default function PMCommandBar({
         <div className="pm-quick-actions">
           <button
             type="button"
-            className="pm-quick-btn"
+            className={`pm-quick-btn ${showCriteria ? 'active' : ''}`}
+            onClick={() => setShowCriteria(!showCriteria)}
+            title="Define acceptance criteria and protected files"
+          >
+            <SlidersHorizontal size={14} />
+            <span>Criteria</span>
+          </button>
+          <button
+            type="button"
+            className="pm-quick-btn backlog-btn"
             onClick={() => onOpenBacklog && onOpenBacklog(activeProjectId)}
             disabled={!activeProjectId}
             title="Open Product Backlog & Story Board"
@@ -102,7 +119,7 @@ export default function PMCommandBar({
           </button>
           <button
             type="button"
-            className="pm-quick-btn"
+            className="pm-quick-btn journal-btn"
             onClick={() => onOpenJournal && onOpenJournal(activeProjectId)}
             disabled={!activeProjectId}
             title="Open Agent Memory & Project Journal"
@@ -152,6 +169,20 @@ export default function PMCommandBar({
               </button>
             ))}
           </div>
+        </div>
+      )}
+      {showCriteria && (
+        <div className="directive-criteria-drawer">
+          <label>
+            <strong>Acceptance criteria</strong>
+            <span>หนึ่งเงื่อนไขต่อบรรทัด ระบบจะส่งให้ Architect, QA และ Reviewer ตรวจร่วมกัน</span>
+            <textarea value={criteriaText} onChange={e => setCriteriaText(e.target.value)} placeholder={'ผู้ใช้เห็นสถานะของทุกขั้นตอน\nทดสอบ backend และ frontend ผ่านทั้งหมด'} />
+          </label>
+          <label>
+            <strong>Protected paths</strong>
+            <span>หนึ่ง path ต่อบรรทัด Agent จะแก้ไฟล์เหล่านี้ไม่ได้</span>
+            <textarea value={protectedText} onChange={e => setProtectedText(e.target.value)} placeholder={'.env\ninfra/production'} />
+          </label>
         </div>
       )}
     </div>

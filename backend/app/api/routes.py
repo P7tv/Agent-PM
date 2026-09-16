@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal
 import os
 import sys
@@ -9,6 +9,8 @@ import shutil
 import uuid
 import asyncio
 import subprocess
+import shlex
+from pathlib import Path
 from app.services.state_store import StateStore
 from app.services.project_manager import ProjectManager
 from app.services.agent_runner import AgentRunner
@@ -17,6 +19,7 @@ from app.services.tech_lead_service import TechLeadService
 from app.services.git_service import GitService
 from app.services.skill_manager import SkillManager
 from app.services.console_service import ConsoleService, parse_target_role, is_actionable_directive
+from app.services.verification import load_project_config, detect_verification_commands
 from app.services.sprint_queue import SprintQueue
 from app.api.websocket_hub import hub
 from app.models.schemas import (
@@ -38,6 +41,39 @@ tech_lead_svc = TechLeadService(store=store, pm=pm)
 git_svc = GitService()
 skill_manager = SkillManager()
 console_svc = ConsoleService(store=store)
+preview_processes = {}
+
+
+def _preview_spec(project):
+    config = load_project_config(project.workspace_path)
+    preview = config.get("preview", {}) if isinstance(config.get("preview"), dict) else {}
+    command = preview.get("command")
+    if isinstance(command, str):
+        args = shlex.split(command)
+    elif isinstance(command, list) and all(isinstance(item, str) for item in command):
+        args = command
+    else:
+        args = []
+    root = Path(project.workspace_path).resolve()
+    cwd = (root / str(preview.get("cwd", "."))).resolve()
+    try:
+        cwd.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Preview cwd must stay inside the project workspace")
+    if not args or not cwd.is_dir():
+        raise HTTPException(status_code=409, detail="Preview command is not configured correctly")
+    return args, str(cwd), preview.get("url")
+
+
+async def _stop_preview(project_id: str):
+    process = preview_processes.pop(project_id, None)
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            await asyncio.to_thread(process.wait, 5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            await asyncio.to_thread(process.wait, 5)
 
 class SkillUpdateRequest(BaseModel):
     content: str
@@ -53,6 +89,8 @@ class LeadChatRequest(BaseModel):
 
 class DirectiveRequest(BaseModel):
     directive: str
+    acceptance_criteria: List[str] = Field(default_factory=list, max_length=50)
+    protected_paths: List[str] = Field(default_factory=list, max_length=50)
 
     @field_validator("directive")
     @classmethod
@@ -63,7 +101,11 @@ class DirectiveRequest(BaseModel):
 
 
 class ApprovalDecisionRequest(BaseModel):
-    decision: Literal["APPROVED", "REJECTED"]
+    decision: Literal["APPROVED", "REJECTED", "CHANGES_REQUESTED"]
+    feedback: str = ""
+
+class RetrySprintRequest(BaseModel):
+    stage: Literal["QA", "REVIEWER", "FINAL"] = "QA"
 
 class WhisperRequest(BaseModel):
     role: str
@@ -159,6 +201,7 @@ async def delete_project(project_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     await sprint_queue.stop_project(project_id)
+    await _stop_preview(project_id)
     store.delete_project(project_id)
     await hub.broadcast("PROJECT_DELETED", {"project_id": project_id})
     return {"status": "DELETED", "project_id": project_id}
@@ -189,13 +232,101 @@ def get_sprint_tasks(project_id: str, sprint_id: str):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    sprint = store.get_sprint(sprint_id)
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
     return store.get_sprint_tasks(sprint_id)
+
+@router.get("/projects/{project_id}/sprints/{sprint_id}/report")
+def get_sprint_report(project_id: str, sprint_id: str):
+    sprint = store.get_sprint(sprint_id)
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
+    logs = store.get_agent_sprint_logs(sprint_id) if hasattr(store, "get_agent_sprint_logs") else []
+    return {"sprint": sprint, "tasks": store.get_sprint_tasks(sprint_id), "agent_logs": logs}
+
+@router.post("/projects/{project_id}/sprints/{sprint_id}/retry", response_model=QueueItem)
+async def retry_sprint(project_id: str, sprint_id: str, req: RetrySprintRequest):
+    sprint = store.get_sprint(sprint_id)
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
+    if sprint.status not in {"FAILED", "REJECTED"}:
+        raise HTTPException(status_code=409, detail="Only failed or rejected sprints can be retried")
+    if not sprint.checkpoint_path or not os.path.isdir(sprint.checkpoint_path):
+        raise HTTPException(status_code=409, detail="This sprint has no preserved checkpoint")
+    plan = sprint.execution_plan or {}
+    item = sprint_queue.enqueue(
+        project_id, sprint.directive,
+        acceptance_criteria=plan.get("acceptance_criteria", []),
+        protected_paths=plan.get("protected_paths", []),
+        source_sprint_id=sprint_id, resume_from=req.stage,
+    )
+    await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
+    return item
+
+@router.get("/projects/{project_id}/config")
+def get_project_config(project_id: str):
+    project = store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    config = load_project_config(project.workspace_path)
+    checks = detect_verification_commands(project.workspace_path)
+    preview = config.get("preview", {}) if isinstance(config.get("preview", {}), dict) else {}
+    return {
+        "config_file": next((name for name in (".agent-pm.yml", ".agent-pm.yaml") if os.path.isfile(os.path.join(project.workspace_path, name))), None),
+        "verification_checks": [{"name": c["name"], "kind": c["kind"], "required": c.get("required", True)} for c in checks],
+        "protected_paths": config.get("protected_paths", []),
+        "preview": {"url": preview.get("url"), "command": preview.get("command")},
+    }
+
+@router.get("/projects/{project_id}/preview")
+def get_preview_status(project_id: str):
+    project = store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    process = preview_processes.get(project_id)
+    config = load_project_config(project.workspace_path)
+    preview = config.get("preview", {}) if isinstance(config.get("preview"), dict) else {}
+    return {"running": bool(process and process.poll() is None), "url": preview.get("url")}
+
+@router.post("/projects/{project_id}/preview")
+async def start_preview(project_id: str):
+    project = store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    existing = preview_processes.get(project_id)
+    if existing and existing.poll() is None:
+        return {"running": True, "url": load_project_config(project.workspace_path).get("preview", {}).get("url")}
+    args, cwd, url = _preview_spec(project)
+    try:
+        process = await asyncio.to_thread(
+            subprocess.Popen, args, cwd=cwd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not start preview: {exc}")
+    preview_processes[project_id] = process
+    await asyncio.sleep(0.25)
+    if process.poll() is not None:
+        preview_processes.pop(project_id, None)
+        raise HTTPException(status_code=500, detail="Preview process exited during startup")
+    return {"running": True, "url": url}
+
+@router.delete("/projects/{project_id}/preview")
+async def stop_preview(project_id: str):
+    if not store.get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _stop_preview(project_id)
+    return {"running": False}
 
 @router.get("/projects/{project_id}/sprints/{sprint_id}/agent-logs")
 def get_sprint_agent_logs(project_id: str, sprint_id: str):
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    sprint = store.get_sprint(sprint_id)
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
     if hasattr(store, "get_agent_sprint_logs"):
         return store.get_agent_sprint_logs(sprint_id)
     return []
@@ -206,12 +337,23 @@ def export_sprint_release_notes(project_id: str, sprint_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     sprint = store.get_sprint(sprint_id)
-    if not sprint:
-        raise HTTPException(status_code=404, detail="Sprint not found")
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
     
     started_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(sprint.started_at)) if sprint.started_at else "N/A"
     completed_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(sprint.completed_at)) if sprint.completed_at else "In Progress"
     duration = f"{int(sprint.completed_at - sprint.started_at)}s" if sprint.completed_at and sprint.started_at else "N/A"
+    criteria_md = "\n".join(f"- {item}" for item in sprint.execution_plan.get("acceptance_criteria", [])) or "- Not recorded"
+    check_lines = [
+        f"- **{check.get('status', 'UNKNOWN')}** — {check.get('name', 'check')}"
+        for check in sprint.verification_report.get("checks", [])
+    ]
+    checks_md = "\n".join(check_lines) or f"- {sprint.verification_report.get('status', 'Not recorded')}"
+    changed_lines = []
+    for kind in ("added", "modified", "deleted"):
+        changed_lines.extend(f"- `{path}` ({kind})" for path in sprint.change_evidence.get(kind, []))
+    changes_md = "\n".join(changed_lines) or "- No file evidence recorded"
+    findings_md = "\n".join(f"- {item}" for item in sprint.review_verdict.get("findings", [])) or "- None"
     
     md = f"""# 🚀 Sprint Release Notes: {sprint.sprint_id}
 **Project:** {p.name} (`{project_id}`)  
@@ -232,6 +374,19 @@ def export_sprint_release_notes(project_id: str, sprint_id: str):
 
 ## 📝 Release Summary & Highlights
 {sprint.release_summary or "No release summary recorded for this sprint."}
+
+## ✅ Acceptance Criteria
+{criteria_md}
+
+## 🧪 Verification
+{checks_md}
+
+## 📁 Change Evidence
+{changes_md}
+
+## 🔍 Review Verdict
+**{sprint.review_verdict.get("verdict", "Not recorded")}**
+{findings_md}
 
 ---
 *Generated automatically by Agent-PM Autonomous Development Dashboard.*
@@ -256,7 +411,10 @@ async def enqueue_project_directive(project_id: str, req: DirectiveRequest):
         raise HTTPException(status_code=404, detail="Project not found")
     if not runner.runtime_status()["available"]:
         raise HTTPException(status_code=503, detail=runner.runtime_status()["message"])
-    item = sprint_queue.enqueue(project_id, req.directive)
+    item = sprint_queue.enqueue(
+        project_id, req.directive,
+        acceptance_criteria=req.acceptance_criteria, protected_paths=req.protected_paths,
+    )
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
     return item
 
@@ -525,7 +683,7 @@ def get_project_file_content(project_id: str, path: str):
     target_path = os.path.realpath(os.path.join(real_ws, path))
     
     # Path traversal protection
-    if not target_path.startswith(real_ws) or not os.path.isfile(target_path):
+    if os.path.commonpath([real_ws, target_path]) != real_ws or not os.path.isfile(target_path):
         raise HTTPException(status_code=400, detail="Invalid file path or access denied")
     
     try:
@@ -534,13 +692,6 @@ def get_project_file_content(project_id: str, path: str):
         return {"path": path, "content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/projects/{project_id}/agents")
-def get_project_agents(project_id: str):
-    p = store.get_project(project_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return store.get_all_agent_states(project_id)
 
 @router.post("/projects/{project_id}/agents")
 async def add_project_agent(project_id: str, req: CustomAgentCreateRequest):
@@ -609,11 +760,12 @@ async def resolve_approval(project_id: str, request_id: str, req: ApprovalDecisi
         raise HTTPException(status_code=404, detail="Pending approval not found for this project")
     store.resolve_approval(request_id, req.decision)
     # Signal the orchestrator to unblock the pipeline
-    orchestrator.resolve_gate(request_id, req.decision)
+    orchestrator.resolve_gate(request_id, req.decision, req.feedback)
     await hub.broadcast("DECISION_GATE_RESOLVED", {
         "project_id": project_id,
         "request_id": request_id,
-        "decision": req.decision
+        "decision": req.decision,
+        "feedback": req.feedback,
     })
     return {"status": "RESOLVED", "decision": req.decision}
 
@@ -670,7 +822,10 @@ async def send_directive(project_id: str, req: DirectiveRequest):
         
     if not runner.runtime_status()["available"]:
         raise HTTPException(status_code=503, detail=runner.runtime_status()["message"])
-    item = sprint_queue.enqueue(project_id, req.directive)
+    item = sprint_queue.enqueue(
+        project_id, req.directive,
+        acceptance_criteria=req.acceptance_criteria, protected_paths=req.protected_paths,
+    )
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
     return {"status": "QUEUED", "project_id": project_id, "directive": req.directive, "queue_id": item.queue_id}
 
@@ -1207,21 +1362,21 @@ def apply_code_change(project_id: str, req: ApplyChangeRequest):
     # Security: ensure file is inside the workspace
     real_workspace = os.path.realpath(p.workspace_path)
     real_target = os.path.realpath(full_path)
-    if not real_target.startswith(real_workspace):
+    if os.path.commonpath([real_workspace, real_target]) != real_workspace:
         raise HTTPException(status_code=403, detail="File path must be inside the project workspace")
 
     try:
         # Create parent directories if needed
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        os.makedirs(os.path.dirname(real_target), exist_ok=True)
 
         # Write the file
-        with open(full_path, 'w', encoding='utf-8') as f:
+        with open(real_target, 'w', encoding='utf-8') as f:
             f.write(req.content)
 
         # Git add + commit
         commit_msg = req.commit_message or f"Apply code change: {os.path.basename(req.filepath)}"
         try:
-            subprocess.run(["git", "add", full_path], cwd=p.workspace_path, capture_output=True, timeout=10)
+            subprocess.run(["git", "add", real_target], cwd=p.workspace_path, capture_output=True, timeout=10)
             subprocess.run(
                 ["git", "commit", "-m", commit_msg],
                 cwd=p.workspace_path, capture_output=True, timeout=10

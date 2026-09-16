@@ -2,7 +2,8 @@ import asyncio
 import uuid
 import time
 import os
-from app.services.verification import verify_workspace
+from pathlib import Path, PurePosixPath
+from app.services.verification import verify_workspace, load_project_config
 from app.services.pipeline_contracts import build_execution_plan, choose_fix_owner, parse_reviewer_verdict
 from app.services.workspace_session import WorkspaceSession, changed_paths, flatten_changes, snapshot_workspace
 from typing import Dict, Any, Optional
@@ -20,6 +21,7 @@ class Orchestrator:
         self._pending_gates: Dict[str, tuple] = {}
         self._aborted_projects: set = set()
         self._gate_projects = {}
+        self._gate_feedback: Dict[str, str] = {}
         self._running_tasks = {}
         self._active_projects = set()
 
@@ -36,13 +38,15 @@ class Orchestrator:
                 holder["decision"] = "REJECTED"
                 evt.set()
 
-    def resolve_gate(self, request_id: str, decision: str):
+    def resolve_gate(self, request_id: str, decision: str, feedback: str = ""):
         """Called by the API when PM approves/rejects a gate. Unblocks the pipeline."""
-        if decision not in {"APPROVED", "REJECTED"}:
+        if decision not in {"APPROVED", "REJECTED", "CHANGES_REQUESTED"}:
             raise ValueError("Invalid approval decision")
         if request_id in self._pending_gates:
             event, holder = self._pending_gates[request_id]
             holder["decision"] = decision
+            holder["feedback"] = feedback.strip()
+            self._gate_feedback[request_id] = feedback.strip()
             event.set()
 
     async def _wait_for_approval(self, request_id: str, timeout: float = 3600.0) -> str:
@@ -58,16 +62,33 @@ class Orchestrator:
             self.store.resolve_approval(request_id, holder["decision"])
         return holder["decision"]
 
-    async def execute_pm_directive(self, project_id: str, directive: str, event_callback=None) -> Dict[str, Any]:
+    async def execute_pm_directive(
+        self, project_id: str, directive: str, event_callback=None,
+        acceptance_criteria=None, protected_paths=None,
+        source_sprint_id: Optional[str] = None, resume_from: Optional[str] = None,
+    ) -> Dict[str, Any]:
         workspace = self.pm.get_project_workspace(project_id)
         execution_workspace = workspace
         workspace_session = None
         workspace_committed = False
+        source_sprint = None
         project = self.store.get_project(project_id)
         if not project:
             raise KeyError(f"Project {project_id} not found")
 
         meta = self.store.get_project_metadata(project_id)
+        project_config = load_project_config(workspace)
+        configured_protected = project_config.get("protected_paths", [])
+        protected_paths = list(dict.fromkeys([
+            str(path).strip().strip("/") for path in (protected_paths or []) +
+            (configured_protected if isinstance(configured_protected, list) else [])
+            if str(path).strip()
+        ]))
+        acceptance_criteria = [str(item).strip() for item in (acceptance_criteria or []) if str(item).strip()]
+
+        def is_protected(relative_path: str) -> bool:
+            candidate = PurePosixPath(relative_path)
+            return any(candidate == PurePosixPath(rule) or PurePosixPath(rule) in candidate.parents for rule in protected_paths)
 
         broadcast = event_callback
         async def event_callback(event_type, data):
@@ -134,6 +155,11 @@ class Orchestrator:
                 paths = flatten_changes(evidence)
                 result["changed_files"] = paths
                 result["change_evidence"] = evidence
+                violations = [path for path in paths if is_protected(path)]
+                if violations:
+                    raise RuntimeError(
+                        f"{kwargs['role']}: protected paths were modified: {', '.join(violations[:20])}"
+                    )
                 await event_callback("AGENT_EVIDENCE", {
                     "project_id": project_id,
                     "role": kwargs["role"],
@@ -261,7 +287,9 @@ class Orchestrator:
             total_tokens=0,
             backend_used="mock",
             started_at=time.time(),
-            tasks_count=0
+            tasks_count=0,
+            source_sprint_id=source_sprint_id,
+            resume_from=resume_from,
         )
         self.store.record_sprint(sprint_record)
         self._active_projects.add(project_id)
@@ -280,8 +308,25 @@ class Orchestrator:
                     "role": "TechLead",
                     "message": "กำลังสร้าง staged workspace เพื่อป้องกันไฟล์ครึ่งงาน",
                 })
-                workspace_session = await asyncio.to_thread(WorkspaceSession, workspace)
+                runs_root = str(Path(self.store.db_path).resolve().parent / ".agentpm-runs")
+                checkpoint = None
+                if source_sprint_id:
+                    source_sprint = self.store.get_sprint(source_sprint_id)
+                    if not source_sprint or source_sprint.project_id != project_id:
+                        raise RuntimeError("Retry source sprint does not belong to this project")
+                    checkpoint = source_sprint.checkpoint_path
+                    try:
+                        Path(checkpoint or "").resolve().relative_to(Path(runs_root).resolve())
+                    except (ValueError, OSError):
+                        raise RuntimeError("Retry checkpoint is outside the managed run directory")
+                workspace_session = await asyncio.to_thread(
+                    WorkspaceSession, workspace, runs_root, sprint_id, checkpoint,
+                )
                 execution_workspace = str(workspace_session.workspace)
+                self.store.update_sprint(
+                    sprint_id, checkpoint_path=execution_workspace,
+                    source_sprint_id=source_sprint_id, resume_from=resume_from,
+                )
 
             # Build shared sprint context (Team Blackboard)
             sprint_context = dict(meta) if meta else {}
@@ -374,6 +419,18 @@ class Orchestrator:
             standard_roles = {"TechLead", "Architect", "Designer", "BackendDev", "FrontendDev", "QATester", "Reviewer", "DocWriter"}
             custom_agents = [a for a in all_agents if a.role not in standard_roles]
             execution_plan = build_execution_plan(directive, arch_plan, meta, custom_agents)
+            if source_sprint and source_sprint.execution_plan:
+                previous_plan = source_sprint.execution_plan
+                execution_plan["roles"] = previous_plan.get("roles", execution_plan["roles"])
+                execution_plan["quality_roles"] = previous_plan.get("quality_roles", execution_plan["quality_roles"])
+                execution_plan["acceptance_criteria"] = previous_plan.get(
+                    "acceptance_criteria", execution_plan["acceptance_criteria"]
+                )
+            if acceptance_criteria:
+                execution_plan["acceptance_criteria"] = list(dict.fromkeys(
+                    acceptance_criteria + execution_plan["acceptance_criteria"]
+                ))
+            execution_plan["protected_paths"] = protected_paths
             selected_roles = execution_plan["roles"]
             code_roles = [role for role in selected_roles if role not in {"Designer", "DocWriter"}]
             verification_required = bool(code_roles)
@@ -409,7 +466,10 @@ class Orchestrator:
                     custom_tasks.append((ca, task_by_role[ca.role]))
     
             tasks_count = len(task_by_role)
-            self.store.update_sprint(sprint_id, tasks_count=tasks_count, total_tokens=total_tokens, backend_used=get_backend())
+            self.store.update_sprint(
+                sprint_id, tasks_count=tasks_count, total_tokens=total_tokens,
+                backend_used=get_backend(), execution_plan=execution_plan,
+            )
     
             if event_callback:
                 await event_callback("TASKS_UPDATED", {"project_id": project_id})
@@ -448,12 +508,42 @@ class Orchestrator:
     
                 # *** BLOCKING WAIT — pipeline pauses here until PM resolves ***
                 decision = await self._wait_for_approval(approval.request_id)
+                gate_feedback = self._gate_feedback.pop(approval.request_id, "")
                 await event_callback("DECISION_GATE_RESOLVED", {"project_id": project_id, "request_id": approval.request_id, "decision": decision})
                 aborted = await check_and_handle_abort()
                 if aborted:
                     return aborted
     
-                if decision == "REJECTED":
+                if decision == "CHANGES_REQUESTED":
+                    feedback = gate_feedback or "Revise the plan before implementation."
+                    await update_agent("Architect", "THINKING", "Revising the plan from PM feedback")
+                    revised = await dispatch(
+                        project_id=project_id, role="Architect",
+                        prompt=(
+                            f"Original directive: {directive}\n\nCurrent plan:\n{arch_plan}\n\n"
+                            f"PM requested these changes:\n{feedback}\n\n"
+                            "Revise the technical plan and acceptance criteria. Keep the current assigned roles unless the PM explicitly removes scope."
+                        ),
+                        workspace_path=execution_workspace, project_context=sprint_context,
+                        event_callback=event_callback,
+                    )
+                    record_res(revised, role="Architect")
+                    arch_plan = revised.get("response", arch_plan)
+                    sprint_context["architect_plan"] = arch_plan
+                    revised_plan = build_execution_plan(directive, arch_plan, meta, custom_agents)
+                    execution_plan["acceptance_criteria"] = list(dict.fromkeys(
+                        acceptance_criteria + revised_plan["acceptance_criteria"]
+                    ))
+                    sprint_context["acceptance_criteria"] = "\n".join(
+                        f"- {item}" for item in execution_plan["acceptance_criteria"]
+                    )
+                    self.store.update_sprint(sprint_id, execution_plan=execution_plan)
+                    await update_agent("Architect", "DONE", "Plan revised from PM feedback")
+                    await event_callback("AGENT_RESPONSE", {
+                        "project_id": project_id, "sprint_id": sprint_id, "role": "Architect",
+                        "step_label": "Plan Revision", "response": arch_plan,
+                    })
+                elif decision == "REJECTED":
                     self.store.update_sprint(
                         sprint_id,
                         status="REJECTED",
@@ -575,6 +665,17 @@ class Orchestrator:
             # Run independent initial work concurrently only in simulation. Real
             # writers are serialized even inside the staged workspace so one
             # agent cannot overwrite another agent's edits.
+            if source_sprint_id:
+                for role in selected_roles:
+                    task = task_by_role.get(role)
+                    if task:
+                        self.store.update_task_result(
+                            task.task_id,
+                            f"Reused staged implementation from {source_sprint_id}; resuming at {resume_from or 'QA'}.",
+                            status="DONE",
+                        )
+                t_ui = t_be = t_fe = t_doc = None
+                custom_tasks = []
             initial_jobs = []
             if t_ui:
                 initial_jobs.append(("Designer", run_designer()))
@@ -732,6 +833,9 @@ class Orchestrator:
                     await update_agent("QATester", "TESTING", "กำลังตรวจผลด้วยชุดทดสอบจริง")
                     await event_callback("AGENT_PROGRESS", {"project_id": project_id, "role": "QATester", "message": "กำลังรันชุดทดสอบจริงและตรวจ exit code"})
                     verification = await run_verification()
+                    self.store.update_sprint(sprint_id, verification_report={
+                        "stage": "QA", "attempt": attempt, **verification,
+                    })
                     aborted = await check_and_handle_abort()
                     if aborted:
                         return aborted
@@ -818,6 +922,7 @@ class Orchestrator:
                         "gate_type": "QA_FAILURE_ESCALATION", "summary": qa_approval.summary,
                     })
                     decision = await self._wait_for_approval(qa_approval.request_id)
+                    self._gate_feedback.pop(qa_approval.request_id, None)
                     await event_callback("DECISION_GATE_RESOLVED", {
                         "project_id": project_id, "request_id": qa_approval.request_id, "decision": decision,
                     })
@@ -866,7 +971,15 @@ class Orchestrator:
             # 5. Reviewer signs off with full sprint blackboard
             staged_evidence = await asyncio.to_thread(workspace_session.changes) if workspace_session is not None else {"added": [], "modified": [], "deleted": []}
             staged_paths = flatten_changes(staged_evidence)
+            protected_violations = [path for path in staged_paths if is_protected(path)]
+            if protected_violations:
+                raise RuntimeError(
+                    "Protected paths changed in staged workspace: " + ", ".join(protected_violations[:20])
+                )
             staged_diff = await asyncio.to_thread(workspace_session.review_diff) if workspace_session is not None else "Unavailable in simulation"
+            self.store.update_sprint(sprint_id, change_evidence={
+                **staged_evidence, "diff": staged_diff,
+            })
             self.store.update_task_status(t_rev.task_id, "IN_PROGRESS")
             await update_agent("Reviewer", "REVIEWING", "Auditing security, diff quality, and writing release summary")
             rev_prompt = (
@@ -897,6 +1010,7 @@ class Orchestrator:
 
             record_res(rev_res, role="Reviewer", duration=time.time() - t0_rev_res)
             verdict = {"verdict": "APPROVED", "findings": [], "owners": []} if self.runner.use_mock else parse_reviewer_verdict(rev_res.get("response", ""))
+            self.store.update_sprint(sprint_id, review_verdict=verdict)
             await event_callback("AGENT_RESPONSE", {
                 "project_id": project_id, "sprint_id": sprint_id, "role": "Reviewer",
                 "step_label": "Code Review 1", "response": rev_res.get("response", ""),
@@ -960,6 +1074,7 @@ class Orchestrator:
                 )
                 record_res(rev_res, role="Reviewer", duration=time.time() - t0_second_review)
                 verdict = {"verdict": "APPROVED", "findings": [], "owners": []} if self.runner.use_mock else parse_reviewer_verdict(rev_res.get("response", ""))
+                self.store.update_sprint(sprint_id, review_verdict=verdict)
                 await event_callback("AGENT_RESPONSE", {
                     "project_id": project_id, "sprint_id": sprint_id, "role": "Reviewer",
                     "step_label": "Code Review 2", "response": rev_res.get("response", ""),
@@ -987,6 +1102,9 @@ class Orchestrator:
             if not self.runner.use_mock:
                 await update_agent("QATester", "TESTING", "Running final verification after review")
                 final_verification = await run_verification()
+                self.store.update_sprint(sprint_id, verification_report={
+                    "stage": "FINAL", **final_verification,
+                })
                 final_checks = ", ".join(
                     f"{check['name']}={check['status']}" for check in final_verification.get("checks", [])
                 ) or "no checks discovered"
@@ -1006,6 +1124,9 @@ class Orchestrator:
 
                 workspace_changes = await asyncio.to_thread(workspace_session.commit)
                 workspace_committed = True
+                self.store.update_sprint(sprint_id, change_evidence={
+                    **workspace_changes, "diff": staged_diff,
+                })
                 await event_callback("WORKSPACE_COMMITTED", {
                     "project_id": project_id,
                     "sprint_id": sprint_id,
@@ -1108,8 +1229,10 @@ class Orchestrator:
                 if not workspace_committed:
                     for task in self.store.get_sprint_tasks(sprint_id):
                         previous = task.result_output or "Task did not complete."
-                        if "Staged changes discarded" not in previous:
-                            previous += "\n\nStaged changes discarded because the sprint did not pass every gate."
+                        if "Staged changes preserved" not in previous:
+                            previous += "\n\nStaged changes preserved as a retry checkpoint because the sprint did not pass every gate."
                         self.store.update_task_result(task.task_id, previous, status="FAILED")
-                workspace_session.close()
+                # Successful runs remove the checkpoint. Failed runs keep it so
+                # the PM can retry from the staged changes instead of starting over.
+                workspace_session.close(delete=workspace_committed)
             self._active_projects.discard(project_id)

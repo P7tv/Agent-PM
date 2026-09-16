@@ -121,6 +121,19 @@ class StateStore:
                     release_summary TEXT
                 )
             """)
+            for column, definition in (
+                ("execution_plan_json", "TEXT DEFAULT '{}'"),
+                ("verification_report_json", "TEXT DEFAULT '{}'"),
+                ("change_evidence_json", "TEXT DEFAULT '{}'"),
+                ("review_verdict_json", "TEXT DEFAULT '{}'"),
+                ("checkpoint_path", "TEXT DEFAULT NULL"),
+                ("source_sprint_id", "TEXT DEFAULT NULL"),
+                ("resume_from", "TEXT DEFAULT NULL"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE sprints ADD COLUMN {column} {definition}")
+                except sqlite3.OperationalError:
+                    pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS directive_queue (
                     queue_id TEXT PRIMARY KEY,
@@ -135,6 +148,16 @@ class StateStore:
                 conn.execute("ALTER TABLE directive_queue ADD COLUMN priority TEXT DEFAULT 'NORMAL'")
             except sqlite3.OperationalError:
                 pass
+            for column, definition in (
+                ("acceptance_criteria_json", "TEXT DEFAULT '[]'"),
+                ("protected_paths_json", "TEXT DEFAULT '[]'"),
+                ("source_sprint_id", "TEXT DEFAULT NULL"),
+                ("resume_from", "TEXT DEFAULT NULL"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE directive_queue ADD COLUMN {column} {definition}")
+                except sqlite3.OperationalError:
+                    pass
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS console_messages (
@@ -486,13 +509,18 @@ class StateStore:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO sprints
-                (sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary,
+                 execution_plan_json, verification_report_json, change_evidence_json, review_verdict_json,
+                 checkpoint_path, source_sprint_id, resume_from)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sprint.sprint_id, sprint.project_id, sprint.directive, sprint.status,
                     sprint.total_tokens, sprint.backend_used, sprint.started_at,
-                    sprint.completed_at, sprint.tasks_count, sprint.release_summary
+                    sprint.completed_at, sprint.tasks_count, sprint.release_summary,
+                    json.dumps(sprint.execution_plan), json.dumps(sprint.verification_report),
+                    json.dumps(sprint.change_evidence), json.dumps(sprint.review_verdict),
+                    sprint.checkpoint_path, sprint.source_sprint_id, sprint.resume_from,
                 )
             )
             conn.commit()
@@ -506,7 +534,14 @@ class StateStore:
         total_tokens: Optional[int] = None,
         backend_used: Optional[str] = None,
         release_summary: Optional[str] = None,
-        tasks_count: Optional[int] = None
+        tasks_count: Optional[int] = None,
+        execution_plan: Optional[Dict[str, Any]] = None,
+        verification_report: Optional[Dict[str, Any]] = None,
+        change_evidence: Optional[Dict[str, Any]] = None,
+        review_verdict: Optional[Dict[str, Any]] = None,
+        checkpoint_path: Optional[str] = None,
+        source_sprint_id: Optional[str] = None,
+        resume_from: Optional[str] = None,
     ):
         updates = []
         params = []
@@ -528,6 +563,23 @@ class StateStore:
         if tasks_count is not None:
             updates.append("tasks_count = ?")
             params.append(tasks_count)
+        for column, value in (
+            ("execution_plan_json", execution_plan),
+            ("verification_report_json", verification_report),
+            ("change_evidence_json", change_evidence),
+            ("review_verdict_json", review_verdict),
+        ):
+            if value is not None:
+                updates.append(f"{column} = ?")
+                params.append(json.dumps(value))
+        for column, value in (
+            ("checkpoint_path", checkpoint_path),
+            ("source_sprint_id", source_sprint_id),
+            ("resume_from", resume_from),
+        ):
+            if value is not None:
+                updates.append(f"{column} = ?")
+                params.append(value)
 
         if not updates:
             return
@@ -542,7 +594,9 @@ class StateStore:
         with self._get_conn() as conn:
             cur = conn.execute(
                 """
-                SELECT sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary
+                SELECT sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary,
+                       execution_plan_json, verification_report_json, change_evidence_json, review_verdict_json,
+                       checkpoint_path, source_sprint_id, resume_from
                 FROM sprints WHERE project_id = ? ORDER BY started_at DESC
                 """,
                 (project_id,)
@@ -558,7 +612,10 @@ class StateStore:
                     started_at=r[6],
                     completed_at=r[7],
                     tasks_count=r[8] or 0,
-                    release_summary=r[9]
+                    release_summary=r[9], execution_plan=json.loads(r[10] or "{}"),
+                    verification_report=json.loads(r[11] or "{}"), change_evidence=json.loads(r[12] or "{}"),
+                    review_verdict=json.loads(r[13] or "{}"), checkpoint_path=r[14],
+                    source_sprint_id=r[15], resume_from=r[16],
                 )
                 for r in cur.fetchall()
             ]
@@ -567,7 +624,9 @@ class StateStore:
         with self._get_conn() as conn:
             cur = conn.execute(
                 """
-                SELECT sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary
+                SELECT sprint_id, project_id, directive, status, total_tokens, backend_used, started_at, completed_at, tasks_count, release_summary,
+                       execution_plan_json, verification_report_json, change_evidence_json, review_verdict_json,
+                       checkpoint_path, source_sprint_id, resume_from
                 FROM sprints WHERE sprint_id = ?
                 """,
                 (sprint_id,)
@@ -584,19 +643,40 @@ class StateStore:
                     started_at=r[6],
                     completed_at=r[7],
                     tasks_count=r[8] or 0,
-                    release_summary=r[9]
+                    release_summary=r[9], execution_plan=json.loads(r[10] or "{}"),
+                    verification_report=json.loads(r[11] or "{}"), change_evidence=json.loads(r[12] or "{}"),
+                    review_verdict=json.loads(r[13] or "{}"), checkpoint_path=r[14],
+                    source_sprint_id=r[15], resume_from=r[16],
                 )
         return None
 
-    def enqueue_directive(self, project_id: str, directive: str, priority: str = "NORMAL") -> QueueItem:
+    def enqueue_directive(
+        self,
+        project_id: str,
+        directive: str,
+        priority: str = "NORMAL",
+        acceptance_criteria: Optional[List[str]] = None,
+        protected_paths: Optional[List[str]] = None,
+        source_sprint_id: Optional[str] = None,
+        resume_from: Optional[str] = None,
+    ) -> QueueItem:
         with self._get_conn() as conn:
             cur = conn.execute("SELECT MAX(position) FROM directive_queue WHERE project_id = ?", (project_id,))
             row = cur.fetchone()
             max_pos = row[0] if row and row[0] is not None else -1
-            item = QueueItem(project_id=project_id, directive=directive, position=max_pos + 1, priority=priority)
+            item = QueueItem(
+                project_id=project_id, directive=directive, position=max_pos + 1, priority=priority,
+                acceptance_criteria=acceptance_criteria or [], protected_paths=protected_paths or [],
+                source_sprint_id=source_sprint_id, resume_from=resume_from,
+            )
             conn.execute(
-                "INSERT INTO directive_queue (queue_id, project_id, directive, status, position, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (item.queue_id, item.project_id, item.directive, item.status, item.position, item.priority, item.created_at)
+                """INSERT INTO directive_queue
+                   (queue_id, project_id, directive, status, position, priority, created_at,
+                    acceptance_criteria_json, protected_paths_json, source_sprint_id, resume_from)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (item.queue_id, item.project_id, item.directive, item.status, item.position,
+                 item.priority, item.created_at, json.dumps(item.acceptance_criteria),
+                 json.dumps(item.protected_paths), item.source_sprint_id, item.resume_from)
             )
             conn.commit()
             return item
@@ -604,14 +684,18 @@ class StateStore:
     def get_queue(self, project_id: str) -> List[QueueItem]:
         with self._get_conn() as conn:
             cur = conn.execute(
-                """SELECT queue_id, project_id, directive, status, position, created_at, priority
+                """SELECT queue_id, project_id, directive, status, position, created_at, priority,
+                          acceptance_criteria_json, protected_paths_json, source_sprint_id, resume_from
                    FROM directive_queue WHERE project_id = ? AND status = 'QUEUED'
                    ORDER BY CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
                             position ASC, created_at ASC""",
                 (project_id,)
             )
             return [
-                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5], priority=r[6] or "NORMAL")
+                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4],
+                          created_at=r[5], priority=r[6] or "NORMAL",
+                          acceptance_criteria=json.loads(r[7] or "[]"), protected_paths=json.loads(r[8] or "[]"),
+                          source_sprint_id=r[9], resume_from=r[10])
                 for r in cur.fetchall()
             ]
 
@@ -639,7 +723,9 @@ class StateStore:
     def get_queue_item(self, queue_id: str) -> Optional[QueueItem]:
         with self._get_conn() as conn:
             row = conn.execute(
-                "SELECT queue_id, project_id, directive, status, position, created_at, priority FROM directive_queue WHERE queue_id = ?",
+                """SELECT queue_id, project_id, directive, status, position, created_at, priority,
+                          acceptance_criteria_json, protected_paths_json, source_sprint_id, resume_from
+                   FROM directive_queue WHERE queue_id = ?""",
                 (queue_id,),
             ).fetchone()
             if not row:
@@ -647,6 +733,8 @@ class StateStore:
             return QueueItem(
                 queue_id=row[0], project_id=row[1], directive=row[2], status=row[3],
                 position=row[4], created_at=row[5], priority=row[6] or "NORMAL",
+                acceptance_criteria=json.loads(row[7] or "[]"), protected_paths=json.loads(row[8] or "[]"),
+                source_sprint_id=row[9], resume_from=row[10],
             )
 
     def cancel_queue_item(self, queue_id: str) -> bool:
@@ -658,14 +746,18 @@ class StateStore:
     def get_all_queue_items(self) -> List[QueueItem]:
         with self._get_conn() as conn:
             cur = conn.execute(
-                """SELECT queue_id, project_id, directive, status, position, created_at, priority
+                """SELECT queue_id, project_id, directive, status, position, created_at, priority,
+                          acceptance_criteria_json, protected_paths_json, source_sprint_id, resume_from
                    FROM directive_queue WHERE status IN ('QUEUED', 'RUNNING')
                    ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END,
                             CASE priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
                             created_at ASC"""
             )
             return [
-                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4], created_at=r[5], priority=r[6] or "NORMAL")
+                QueueItem(queue_id=r[0], project_id=r[1], directive=r[2], status=r[3], position=r[4],
+                          created_at=r[5], priority=r[6] or "NORMAL",
+                          acceptance_criteria=json.loads(r[7] or "[]"), protected_paths=json.loads(r[8] or "[]"),
+                          source_sprint_id=r[9], resume_from=r[10])
                 for r in cur.fetchall()
             ]
 

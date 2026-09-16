@@ -64,16 +64,37 @@ def flatten_changes(changes: Dict[str, Iterable[str]]) -> list[str]:
 
 
 class WorkspaceSession:
-    """A disposable source copy with conflict detection at commit time."""
+    """A staged source copy with conflict detection and optional durable checkpoints."""
 
-    def __init__(self, original: str):
+    def __init__(
+        self,
+        original: str,
+        storage_root: str | None = None,
+        session_id: str | None = None,
+        reuse_path: str | None = None,
+    ):
         self.original = Path(original).resolve()
-        self.temp_root = Path(tempfile.mkdtemp(prefix="pm-sprint-"))
-        self.workspace = self.temp_root / "workspace"
         self._dependency_sources: Dict[str, Path] = {}
-        self._copy_source()
+        if reuse_path:
+            self.workspace = Path(reuse_path).resolve()
+            if not self.workspace.is_dir():
+                raise ValueError("Sprint checkpoint does not exist")
+            self.temp_root = self.workspace.parent
+            self._discover_dependencies()
+        else:
+            if storage_root:
+                root = Path(storage_root).resolve()
+                root.mkdir(parents=True, exist_ok=True)
+                self.temp_root = root / (session_id or next(tempfile._get_candidate_names()))
+                self.temp_root.mkdir()
+            else:
+                self.temp_root = Path(tempfile.mkdtemp(prefix="pm-sprint-"))
+            self.workspace = self.temp_root / "workspace"
+            self._copy_source()
         self.original_baseline = snapshot_workspace(self.original)
-        self.staged_baseline = snapshot_workspace(self.workspace)
+        # A resumed checkpoint contains the edits from the failed run, so its
+        # baseline remains the current registered workspace.
+        self.staged_baseline = self.original_baseline if reuse_path else snapshot_workspace(self.workspace)
 
     def _ignore(self, directory: str, names: list[str]) -> set[str]:
         parent = Path(directory)
@@ -95,6 +116,15 @@ class WorkspaceSession:
                     source = current_path / name
                     relative = source.relative_to(self.original)
                     self._dependency_sources[relative.as_posix()] = source
+                    dirs.remove(name)
+
+    def _discover_dependencies(self) -> None:
+        for current, dirs, _files in os.walk(self.original, followlinks=False):
+            current_path = Path(current)
+            for name in list(dirs):
+                if name in DEPENDENCY_DIRS:
+                    source = current_path / name
+                    self._dependency_sources[source.relative_to(self.original).as_posix()] = source
                     dirs.remove(name)
                 elif name in IGNORED_NAMES or (current_path / name).is_symlink():
                     dirs.remove(name)
@@ -157,6 +187,7 @@ class WorkspaceSession:
             raise RuntimeError("Workspace changed during sprint: " + ", ".join(conflicts[:20]))
 
         backup = self.temp_root / "backup"
+        shutil.rmtree(backup, ignore_errors=True)
         backup.mkdir()
         existed: set[str] = set()
         try:
@@ -200,5 +231,7 @@ class WorkspaceSession:
             raise
         return changes
 
-    def close(self) -> None:
-        shutil.rmtree(self.temp_root, ignore_errors=True)
+    def close(self, delete: bool = True) -> None:
+        self.unmount_dependencies()
+        if delete:
+            shutil.rmtree(self.temp_root, ignore_errors=True)

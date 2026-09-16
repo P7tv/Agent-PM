@@ -304,6 +304,7 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   outline: none;
+  padding-right: 96px;
 }
 
 .pm-input::placeholder {
@@ -990,9 +991,29 @@ body {
 
 /* PM Command Bar Extensions */
 .pm-command-bar-wrapper { position: relative; width: 100%; }
+.directive-criteria-drawer {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 18px;
+  background: var(--bg-secondary); border-top: 1px solid var(--border-color);
+}
+.directive-criteria-drawer label, .gate-feedback { display: flex; flex-direction: column; gap: 6px; }
+.directive-criteria-drawer label span, .gate-feedback span { color: var(--text-secondary); font-size: 11px; }
+.directive-criteria-drawer textarea, .gate-feedback textarea {
+  min-height: 70px; resize: vertical; color: var(--text-primary); background: var(--bg-primary);
+  border: 1px solid var(--border-color); border-radius: 7px; padding: 9px;
+}
+.pm-quick-btn.active { border-color: var(--primary); color: var(--primary); }
+.btn-changes { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 800px) { .directive-criteria-drawer { grid-template-columns: 1fr; } }
 .pm-input-wrapper { flex: 1; display: flex; align-items: center; position: relative; }
-.template-toggle-btn { position: absolute; right: 8px; display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; background: var(--primary-subtle); color: var(--primary); border: 1px solid var(--primary-border); font-size: 11px; font-weight: 500; cursor: pointer; }
-.template-toggle-btn:hover { opacity: 0.85; }
+.template-toggle-btn { position: absolute; right: 8px; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 6px; background: var(--primary-subtle); color: var(--primary-text); border: 1px solid rgba(59, 130, 246, 0.3); font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.15s ease; }
+.template-toggle-btn:hover { background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.5); }
+.pm-quick-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.pm-quick-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 32px; border-radius: var(--radius-sm); background: var(--bg-canvas); color: var(--text-secondary); border: 1px solid var(--border-subtle); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; }
+.pm-quick-btn:hover:not(:disabled) { background: var(--bg-surface-elevated); color: var(--text-primary); border-color: var(--border-medium); box-shadow: var(--shadow-sm); }
+.pm-quick-btn:active:not(:disabled) { transform: scale(0.97); }
+.pm-quick-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pm-quick-btn.backlog-btn:hover:not(:disabled) { border-color: rgba(59, 130, 246, 0.4); color: var(--primary-text); background: var(--primary-subtle); }
+.pm-quick-btn.journal-btn:hover:not(:disabled) { border-color: rgba(139, 92, 246, 0.4); color: var(--info-text); background: var(--info-subtle); }
 .pm-cost-badge { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--bg-canvas); border: 1px solid var(--border-subtle); border-radius: 8px; flex-shrink: 0; }
 .directive-templates-drawer { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--bg-surface); border: 1px solid var(--border-medium); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-lg); z-index: 50; display: flex; flex-direction: column; gap: 10px; }
 .templates-header { display: flex; justify-content: space-between; align-items: center; }
@@ -1908,6 +1929,12 @@ body {
   flex-direction: column;
   gap: 8px;
 }
+.sprint-report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.sprint-history-totals { display: flex; gap: 12px; color: var(--text-secondary); font-size: 11px; }
+.sprint-report-grid section { padding: 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 7px; overflow-wrap: anywhere; }
+.sprint-report-grid ul { margin: 6px 0 0; padding-left: 18px; }
+.sprint-diff pre { max-height: 360px; overflow: auto; padding: 10px; background: #0b1020; color: #dbeafe; border-radius: 6px; font-size: 11px; white-space: pre; }
+@media (max-width: 800px) { .sprint-report-grid { grid-template-columns: 1fr; } }
 
 .sprint-tasks-header {
   font-size: 11px;

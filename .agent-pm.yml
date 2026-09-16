@@ -1,0 +1,24 @@
+verification:
+  timeout_seconds: 240
+  checks:
+    - name: backend tests
+      command: [python, -m, pytest, -q]
+      cwd: .
+      kind: test
+      required: true
+    - name: frontend production build
+      command: [npm, run, build]
+      cwd: frontend
+      kind: build
+      required: true
+
+preview:
+  command: [python, start_dashboard.py]
+  cwd: .
+  url: http://127.0.0.1:8000
+  ready_path: /api/runtime
+
+protected_paths:
+  - .env
+  - .git
+  - backend/state.db

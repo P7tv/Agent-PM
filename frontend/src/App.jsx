@@ -9,7 +9,8 @@ import {
   Plus,
   ListOrdered,
   X,
-  Loader2
+  Loader2,
+  Bell
 } from 'lucide-react';
 import PMCommandBar from './components/PMCommandBar';
 import OfficeFloorView from './components/OfficeFloorView';
@@ -123,8 +124,22 @@ function AppContent() {
   const [wsConnected, setWsConnected] = useState(false);
   const [globalQueue, setGlobalQueue] = useState([]);
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(Boolean(initialRoute.openQueue));
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => localStorage.getItem('agent_pm_notifications') === 'on');
 
   const socketRef = useRef(null);
+  const notificationsRef = useRef(notificationsEnabled);
+
+  useEffect(() => { notificationsRef.current = notificationsEnabled; }, [notificationsEnabled]);
+
+  const toggleNotifications = async () => {
+    if (!notificationsEnabled && 'Notification' in window) {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return toast.error('เบราว์เซอร์ยังไม่อนุญาตการแจ้งเตือน');
+    }
+    const next = !notificationsEnabled;
+    setNotificationsEnabled(next);
+    localStorage.setItem('agent_pm_notifications', next ? 'on' : 'off');
+  };
 
   // Sync route on hashchange (Browser Back/Forward or manual URL edit)
   useEffect(() => {
@@ -341,6 +356,11 @@ function AppContent() {
           const evType = parsed.event;
           const data = parsed.data;
           const projId = data.project_id;
+          if (notificationsRef.current && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+            if (evType === 'DECISION_GATE_OPEN') new Notification('Agent PM รอการตัดสินใจ', { body: data.summary || 'มีแผนงานรออนุมัติ' });
+            if (evType === 'PIPELINE_COMPLETED') new Notification('Sprint เสร็จแล้ว', { body: data.directive || data.summary || '' });
+            if (['PIPELINE_HALTED', 'PIPELINE_REJECTED'].includes(evType)) new Notification('Sprint หยุดทำงาน', { body: data.summary || '' });
+          }
 
           // Append to live stream
           if (projId) {
@@ -457,11 +477,11 @@ function AppContent() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isQueueDrawerOpen]);
 
-  const handleDispatchDirective = async (projectId, directive) => {
+  const handleDispatchDirective = async (projectId, directive, options = {}) => {
     const result = await requestJson(`/api/projects/${projectId}/directive`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ directive })
+      body: JSON.stringify({ directive, ...options })
     });
     fetchProjectDetails(projectId);
     fetchGlobalQueue();
@@ -470,12 +490,12 @@ function AppContent() {
     return result;
   };
 
-  const handleResolveApproval = async (requestId, decision) => {
+  const handleResolveApproval = async (requestId, decision, feedback = '') => {
     if (!activeApproval) return;
     await requestJson(`/api/projects/${activeApproval.project_id}/approvals/${requestId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision })
+      body: JSON.stringify({ decision, feedback })
     });
     setActiveApproval(null);
     fetchData();
@@ -633,6 +653,14 @@ function AppContent() {
     }
   };
 
+  const handleRetrySprint = async (sprint, stage = 'QA') => {
+    await requestJson(`/api/projects/${sprint.project_id}/sprints/${sprint.sprint_id}/retry`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage })
+    });
+    fetchGlobalQueue();
+    toast.success(`นำ checkpoint กลับเข้าคิว เริ่มต่อจาก ${stage}`);
+  };
+
   const focusedProject = projects.find((p) => p.project_id === focusedProjectId);
 
   // Compute session token usage and estimated cost for active project
@@ -708,6 +736,9 @@ function AppContent() {
           </button>
 
           {/* Theme Toggle Button */}
+          <button className={`theme-toggle-btn ${notificationsEnabled ? 'active' : ''}`} onClick={toggleNotifications} title="Desktop notifications" aria-label="Toggle notifications">
+            <Bell size={17} />
+          </button>
           <button
             className="theme-toggle-btn"
             onClick={toggleTheme}
@@ -939,6 +970,7 @@ function AppContent() {
             timelineEvents={timelineEvents[focusedProjectId] || []}
             sprints={sprintsByProject[focusedProjectId] || []}
             onRerunSprint={handleRerunSprint}
+            onRetrySprint={handleRetrySprint}
             onBack={handleBackToOverview}
             onSendConsoleMessage={handleSendConsoleMessage}
             onSendWhisper={handleSendWhisper}

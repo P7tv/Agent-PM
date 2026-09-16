@@ -7,9 +7,63 @@ from pathlib import Path
 import shutil
 import sys
 import shlex
+import yaml
 from typing import Any, Dict, List
 
 from app.services.process_runner import run_process
+
+
+CONFIG_NAMES = (".agent-pm.yml", ".agent-pm.yaml")
+
+
+def load_project_config(workspace: str) -> Dict[str, Any]:
+    root = Path(workspace).resolve()
+    for name in CONFIG_NAMES:
+        path = root / name
+        if path.is_file():
+            try:
+                data = yaml.safe_load(path.read_text()) or {}
+                return data if isinstance(data, dict) else {}
+            except (OSError, yaml.YAMLError):
+                return {}
+    return {}
+
+
+def _configured_checks(root: Path, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    verification = config.get("verification", {})
+    raw_checks = verification.get("checks", []) if isinstance(verification, dict) else []
+    checks = []
+    for index, raw in enumerate(raw_checks if isinstance(raw_checks, list) else []):
+        if not isinstance(raw, dict):
+            continue
+        command = raw.get("command")
+        if isinstance(command, str):
+            try:
+                args = shlex.split(command)
+            except ValueError:
+                continue
+        elif isinstance(command, list) and all(isinstance(item, str) for item in command):
+            args = command
+        else:
+            continue
+        if not args or any(token in {"|", "&&", "||", ";", ">", ">>"} for token in args):
+            continue
+        cwd = (root / str(raw.get("cwd", "."))).resolve()
+        try:
+            cwd.relative_to(root)
+        except ValueError:
+            continue
+        if not cwd.is_dir():
+            continue
+        checks.append({
+            "name": str(raw.get("name") or f"configured check {index + 1}"),
+            "args": args,
+            "cwd": str(cwd),
+            "kind": str(raw.get("kind") or "test"),
+            "required": bool(raw.get("required", True)),
+            "timeout_seconds": float(raw.get("timeout_seconds") or verification.get("timeout_seconds") or 120),
+        })
+    return checks
 
 
 def _package_files(root: Path) -> list[Path]:
@@ -45,7 +99,10 @@ def _is_read_only_script(script: str) -> bool:
 
 
 def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
-    root = Path(workspace)
+    root = Path(workspace).resolve()
+    configured = _configured_checks(root, load_project_config(str(root)))
+    if configured:
+        return configured
     checks: List[Dict[str, Any]] = []
     for package_file in _package_files(root):
         try:
@@ -62,7 +119,7 @@ def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
                 checks.append({
                     "name": f"npm {name}" + (f" ({relative_cwd})" if relative_cwd != "." else ""),
                     "args": _npm_args(name, str(script)), "cwd": str(package_file.parent),
-                    "kind": "test" if name == "test" else name,
+                    "kind": "test" if name == "test" else name, "required": True,
                 })
 
     python_markers = ("pytest.ini", "pyproject.toml", "setup.py", "requirements.txt", "tests")
@@ -79,17 +136,18 @@ def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
         checks.append({
             "name": "pytest" + (f" ({rel})" if rel != "." else ""),
             "args": [sys.executable, "-m", "pytest", "-q"], "cwd": str(python_root), "kind": "test",
+            "required": True,
         })
 
     if (root / "go.mod").is_file():
         checks.extend([
-            {"name": "go test", "args": [shutil.which("go") or "go", "test", "./..."], "cwd": str(root), "kind": "test"},
-            {"name": "go vet", "args": [shutil.which("go") or "go", "vet", "./..."], "cwd": str(root), "kind": "lint"},
+            {"name": "go test", "args": [shutil.which("go") or "go", "test", "./..."], "cwd": str(root), "kind": "test", "required": True},
+            {"name": "go vet", "args": [shutil.which("go") or "go", "vet", "./..."], "cwd": str(root), "kind": "lint", "required": True},
         ])
     if (root / "Cargo.toml").is_file():
         checks.extend([
-            {"name": "cargo test", "args": [shutil.which("cargo") or "cargo", "test"], "cwd": str(root), "kind": "test"},
-            {"name": "cargo check", "args": [shutil.which("cargo") or "cargo", "check"], "cwd": str(root), "kind": "build"},
+            {"name": "cargo test", "args": [shutil.which("cargo") or "cargo", "test"], "cwd": str(root), "kind": "test", "required": True},
+            {"name": "cargo check", "args": [shutil.which("cargo") or "cargo", "check"], "cwd": str(root), "kind": "build", "required": True},
         ])
     order = {"test": 0, "typecheck": 1, "check": 1, "lint": 2, "build": 3}
     checks.sort(key=lambda item: (order.get(item["kind"], 9), item["name"]))
@@ -115,22 +173,24 @@ async def verify_workspace(workspace: str) -> Dict[str, Any]:
     for check in checks:
         command = " ".join(check["args"])
         try:
-            result = await run_process(check["args"], check["cwd"], timeout)
-            status = "PASSED" if result["exit_code"] == 0 else "FAILED"
+            result = await run_process(check["args"], check["cwd"], check.get("timeout_seconds", timeout))
+            status = "PASSED" if result["exit_code"] == 0 else "FAILED" if check.get("required", True) else "WARNING"
             results.append({
                 "name": check["name"], "kind": check["kind"], "status": status,
+                "required": check.get("required", True),
                 "exit_code": result["exit_code"], "command": command,
                 "stdout": result.get("stdout", "")[-12000:], "stderr": result.get("stderr", "")[-4000:],
             })
         except Exception as exc:
             results.append({
                 "name": check["name"], "kind": check["kind"], "status": "ERROR",
+                "required": check.get("required", True),
                 "exit_code": None, "command": command, "stdout": "", "stderr": str(exc),
             })
-        if results[-1]["status"] != "PASSED":
+        if results[-1]["status"] in {"FAILED", "ERROR"} and results[-1]["required"]:
             break
 
-    failed = next((item for item in results if item["status"] != "PASSED"), None)
+    failed = next((item for item in results if item["status"] in {"FAILED", "ERROR"} and item["required"]), None)
     representative = failed or results[-1]
     status = "PASSED" if len(results) == len(checks) and not failed else representative["status"]
     summary = "\n\n".join(
