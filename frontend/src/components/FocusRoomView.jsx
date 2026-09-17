@@ -793,10 +793,10 @@ export default function FocusRoomView({
               className="view-btn"
               disabled={stoppingSprint}
               onClick={async () => {
-                if (window.confirm('หยุดรอบงานนี้? ไฟล์ที่เขียนไว้จะเก็บในโฟลเดอร์พักงาน แต่ Resume ได้เฉพาะเมื่อถึงขั้น QA หรือขั้นตรวจหลังจากนั้น')) {
+                if (window.confirm('พักงานรอบนี้? ระบบจะหยุด agent เก็บไฟล์ และให้ Resume เพื่อทำงานที่ค้างต่อได้')) {
                   setStoppingSprint(true);
                   try {
-                    const response = await fetch(`/api/projects/${project.project_id}/sprints/abort`, { method: 'POST' });
+                    const response = await fetch(`/api/projects/${project.project_id}/sprints/pause`, { method: 'POST' });
                     if (!response.ok) throw new Error('Stop failed');
                     toast.success('ส่งคำสั่งหยุดแล้ว กำลังรอ agent หยุดทำงาน');
                   } catch {
@@ -820,7 +820,7 @@ export default function FocusRoomView({
               }}
             >
               <Square size={13} />
-              <span>{stoppingSprint ? 'กำลังสั่งหยุด…' : 'Stop · หยุดงาน'}</span>
+              <span>{stoppingSprint ? 'กำลังสั่งหยุด…' : 'Pause · พักงาน'}</span>
             </button>
           )}
           {(onRequestDelete || onDeleteProject) && (

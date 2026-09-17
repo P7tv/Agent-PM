@@ -11,6 +11,7 @@ export function DecisionGateModal({ approval, onResolve }) {
     setError('');
     if (decision === 'CHANGES_REQUESTED' && !feedback.trim()) {
       setError('กรุณาระบุสิ่งที่ต้องแก้ในแผน');
+      setSubmitting(false);
       return;
     }
     try { await onResolve(approval.request_id, decision, feedback); }
@@ -23,8 +24,8 @@ export function DecisionGateModal({ approval, onResolve }) {
       <p>{approval.gate_type === 'QA_FAILURE_ESCALATION' ? 'ผลทดสอบยังไม่ผ่าน การอนุมัติจะให้ทำงานต่อพร้อมระบุข้อจำกัดในสรุป' : 'อ่านแผนและเกณฑ์สำเร็จก่อนอนุมัติให้ทีมเริ่มลงมือ'}</p>
       <div className="gate-body" style={{ whiteSpace: 'pre-wrap', maxHeight: '50vh', overflowY: 'auto', overflowWrap: 'anywhere' }}>{approval.summary}</div>
       {approval.gate_type === 'PLAN_APPROVAL' && <label className="gate-feedback">
-        <span>ข้อเสนอแนะเพื่อให้ Architect ปรับแผน</span>
-        <textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="ระบุ scope, เกณฑ์สำเร็จ หรือข้อจำกัดที่ต้องแก้" />
+        <span>คำตอบสำหรับคำถามก่อนเริ่ม หรือข้อเสนอแนะปรับแผน</span>
+        <textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="ตอบคำถามในแผน หรือระบุผลลัพธ์และข้อจำกัดที่ต้องแก้" />
       </label>}
       {error && <p role="alert">{error}</p>}
       <div className="gate-actions">

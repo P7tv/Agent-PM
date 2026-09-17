@@ -25,6 +25,17 @@ def skill_file(root, name, content):
     return path
 
 
+@pytest.mark.parametrize('role', ['SecurityAuditor', 'security-auditor', 'SystematicDebugger', 'systematic-debugger', 'Debugger'])
+def test_audit_and_debug_roles_default_to_read_only(tmp_path, manager, role):
+    from app.services.prompt_builder import READ_ONLY_MODES
+    bundle = build_prompt(manager, role, str(tmp_path), intent='Inspect the reported failure')
+    assert bundle.trace['execution_mode'] in READ_ONLY_MODES
+    assert 'MODE LIMIT: Inspect and report only' in bundle.system
+    assert 'For host-proposals, return one JSON object' in bundle.system
+    expected_skill = 'security-auditor' if 'security' in role.lower() else 'systematic-debugger'
+    assert f'CORE ROLE PLAYBOOK ({expected_skill.upper()})' in bundle.system
+
+
 @pytest.mark.asyncio
 async def test_persona_survives_progress_and_is_shared_by_chat_and_pipeline(tmp_path, manager, monkeypatch):
     import app.services.agent_runner as module

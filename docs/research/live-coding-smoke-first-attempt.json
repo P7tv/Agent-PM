@@ -1,0 +1,50 @@
+{
+  "kind": "LIVE_CODING_FIXTURE_BENCHMARK",
+  "requested_model": "gemini-3.8-flash-medium",
+  "calls_per_trial_ceiling": 3,
+  "timeout_per_call": 60.0,
+  "token_budget_per_trial": 20000,
+  "trials": [
+    {
+      "case_id": "E05",
+      "arm": "single_coder_with_verification",
+      "status": "FAILED",
+      "runtime_status": "FAILED",
+      "grader": {
+        "status": "NOT_RUN"
+      },
+      "scope_passed": true,
+      "changed_files": [],
+      "attempts": [
+        {
+          "role": "BackendDev",
+          "status": "FAILED",
+          "tokens_used": 0,
+          "usage_source": null,
+          "backend_used": "cli",
+          "reported_model": null,
+          "error_code": "CLI_ERROR"
+        }
+      ],
+      "calls": 1,
+      "seconds": 3.9313567919889465,
+      "error": "RuntimeError: CLI: CLI execution failed: invalid model selection (--model \"gemini-3.8-flash-medium\" --effort \"high\"): --model gemini-3.8-flash-medium conflicts with --effort=high",
+      "false_completion": false,
+      "successful_runtime_with_failed_acceptance": false,
+      "tokens_reported_or_estimated": 0,
+      "live_api_verified": false,
+      "browser_verified": false,
+      "repeat": 0
+    }
+  ],
+  "note": "Three calibrated coding fixtures; does not cover all 26 roadmap cases or novice usability.",
+  "runtime_probe": {
+    "provider": "antigravity-cli",
+    "version": "1.2.5",
+    "probe_status": "PASSED",
+    "streaming": true,
+    "exact_session_resume": true,
+    "sandbox": true,
+    "live_instruction_injection": false
+  }
+}

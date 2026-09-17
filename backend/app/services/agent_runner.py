@@ -5,6 +5,8 @@ import os
 import time
 from pathlib import Path
 from app.services.process_runner import run_process
+from app.services.runtime_adapter import AntigravityAdapter
+from app.services.context_assembler import assemble_task_context
 from typing import Callable, Coroutine, Any, Dict, Optional, AsyncGenerator, List
 
 # Antigravity SDK
@@ -15,7 +17,7 @@ except ImportError:
     HAS_ANTIGRAVITY = False
 
 from app.services.skill_manager import SkillManager
-from app.services.prompt_builder import build_prompt, mode_for_role, READ_ONLY_MODES
+from app.services.prompt_builder import build_prompt, mode_for_role, READ_ONLY_MODES, handoff_text
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -24,15 +26,10 @@ import shutil
 
 default_win_agy = os.path.expanduser("~/AppData/Local/agy/bin/agy.exe")
 
-AGY_PATH = (
-    os.environ.get("AGY_PATH")
-    or (default_win_agy if os.path.exists(default_win_agy) else None)
-    or shutil.which("agy")
-    or shutil.which("agy.cmd")
-    or shutil.which("agy.exe")
-    or os.path.expanduser("~/.local/bin/agy")
-    or os.path.expanduser("~/AppData/Local/Programs/agy/agy.exe")
-)
+_agy_candidates = [default_win_agy, shutil.which('agy'), shutil.which('agy.cmd'), shutil.which('agy.exe'),
+                   os.path.expanduser('~/.local/bin/agy'), os.path.expanduser('~/AppData/Local/Programs/agy/agy.exe')]
+AGY_PATH = os.environ.get('AGY_PATH') or next((path for path in _agy_candidates if path and os.path.isfile(path)), None)
+
 HAS_AGY_CLI = bool(AGY_PATH and os.path.exists(AGY_PATH))
 
 class CLIExecutionError(RuntimeError):
@@ -103,11 +100,26 @@ class AgentRunner:
             raise ValueError("Prompt and required task exceed the context budget; shorten the task or split the directive")
         return bundle
 
-    def runtime_status(self):
-        sdk = self.has_api_key and HAS_ANTIGRAVITY
+    def selected_backend(self):
+        preference = os.environ.get('AGENT_RUNTIME', 'auto')
         cli = bool(HAS_AGY_CLI and os.path.isfile(AGY_PATH))
+        sdk = self.has_api_key and HAS_ANTIGRAVITY
+        if self.use_mock: return 'mock'
+        if preference not in {'auto', 'cli', 'sdk'}: return 'unavailable'
+        if cli and preference != 'sdk': return 'cli'
+        if sdk and preference != 'cli': return 'sdk'
+        return 'unavailable'
+
+    def runtime_status(self):
+        sdk = self.selected_backend() == 'sdk'
+        cli = self.selected_backend() == 'cli'
         status = {
             "available": bool(sdk or cli or self.use_mock),
+            "capabilities": {"streaming": cli, "exact_session_resume": cli, "pause": True,
+                             "live_instruction_injection": False, "terminal_sandbox_requested": cli,
+                             "skill_tool_allowlist_enforced": False},
+            "requested_model": os.environ.get("AGENT_MODEL") or None,
+            "cli_file_mode": os.environ.get('AGENT_CLI_FILE_MODE', 'host-proposals'),
             "mode": "mock" if self.use_mock else "sdk" if sdk else "cli" if cli else "unavailable",
             "message": "โหมดจำลอง: ไม่มีการสร้างไฟล์จริง" if self.use_mock else
                        "พร้อมเรียก AI (จะตรวจการเชื่อมต่อเมื่อเริ่มงาน)" if sdk or cli else
@@ -118,17 +130,31 @@ class AgentRunner:
             status["message"] = f"พบ {status['mode']} runtime แต่การเรียกครั้งล่าสุดไม่สำเร็จ: {self.last_runtime_error['message']}"
         return status
 
-    async def _run_cli(self, prompt, workspace_path, emit=None, chat=False):
+    async def _run_cli(self, prompt, workspace_path, emit=None, chat=False, conversation_id=None):
         timeout = max(1.0, float(os.environ.get("AGENT_TIMEOUT_SECONDS", "600")))
-        effort = os.environ.get("AGENT_EFFORT", "high")
+        model = os.environ.get('AGENT_MODEL', '').strip()
+        model_effort = re.search(r'-(low|medium|high)$', model)
+        effort = os.environ.get("AGENT_EFFORT") or (model_effort.group(1) if model_effort else 'high')
         if effort not in {"low", "medium", "high"}:
             raise ValueError("AGENT_EFFORT must be low, medium, or high")
+        if model_effort and model_effort.group(1) != effort:
+            raise ValueError(f'AGENT_EFFORT={effort} conflicts with AGENT_MODEL={model}; choose a matching effort or unset AGENT_EFFORT')
         started = time.monotonic()
         if chat:
             prompt += (
                 "\nRead-only planning: use file browsing/read tools only. Do not invoke terminal, RunCommand, "
                 "or tools requiring confirmation. If repository inspection is unavailable, return your analysis "
-                "from the supplied context and explicitly list unverified assumptions. Always finish with a final text response."
+                "from the supplied context and explicitly list unverified assumptions. If source context is supplied, "
+                "use it without calling any tools. Always finish with a final text response."
+            )
+        else:
+            prompt += (
+                "\nNon-interactive implementation: browse/read files and use direct file editing tools "
+                "(replace_file_content, multi_replace_file_content, write_to_file). Do not use RunCommand, "
+                "terminal, shell scripts, package installation, or web tools. The host runs configured "
+                "checks after your edits and returns their measured results for repairs. Do not create "
+                "or execute a helper script to write files. If direct file tools are unavailable, report "
+                "that blocker explicitly. Finish with changed paths and unrun checks."
             )
         async def progress(elapsed):
             if emit:
@@ -140,16 +166,28 @@ class AgentRunner:
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
                 raise TimeoutError(f"Execution timed out after {timeout:g} seconds")
-            args = [AGY_PATH, "--add-dir", workspace_path, "-p", prompt,
-                    "--effort", effort, "--print-timeout", f"{remaining:g}s",
-                    "--output-format", "json", "--disable-slash-commands"]
-            args += ["--mode", "plan"] if chat else ["--dangerously-skip-permissions"]
-            if os.name == "nt" and AGY_PATH.lower().endswith((".cmd", ".bat")):
-                args = ["cmd.exe", "/c"] + args
-            result = await run_process(args, workspace_path, remaining, progress)
+            adapter = AntigravityAdapter(AGY_PATH, executor=run_process)
+            result, stream = await adapter.start_task(
+                prompt, workspace_path, remaining, effort, readonly=chat, emit=emit,
+                progress=progress, conversation_id=conversation_id,
+                model=model or None)
             try:
-                return parse_cli_response(result)
+                response = parse_cli_response(result)
+                response.conversation_id = stream.conversation_id
+                response.reported_model = stream.model
+                return response
             except CLIExecutionError as exc:
+                exc.conversation_id = stream.conversation_id
+                exc.reported_model = stream.model
+                try:
+                    usage = json.loads(result.get('stdout', '{}')).get('usage', {})
+                    counted = usage.get('total_tokens', 0) if isinstance(usage, dict) else 0
+                except (ValueError, AttributeError):
+                    counted = 0
+                exc.tokens_used = counted if isinstance(counted, int) and counted >= 0 else 0
+                exc.usage_source = 'provider' if exc.tokens_used else 'unavailable'
+                if exc.code == 'PERMISSION_REQUIRED' and stream.failed_tool:
+                    exc.args = (f'{exc} • เครื่องมือ: {stream.failed_tool}; ไฟล์พักงานยังเก็บไว้',)
                 if not chat or attempt or exc.code not in {"EMPTY_RESPONSE", "PERMISSION_REQUIRED"}:
                     raise
                 if emit:
@@ -180,7 +218,8 @@ class AgentRunner:
         prompt: str,
         workspace_path: str,
         project_context: Optional[Dict[str, Any]] = None,
-        event_callback: Optional[Callable[[str, Dict[str, Any]], Coroutine[Any, Any, None]]] = None
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Coroutine[Any, Any, None]]] = None,
+        conversation_id: Optional[str] = None
     ) -> Dict[str, Any]:
         
         async def emit(event_type: str, data: Dict[str, Any]):
@@ -195,6 +234,7 @@ class AgentRunner:
         await emit("AGENT_STATUS_CHANGE", {"status": "THINKING"})
 
         try:
+            prompt, project_context = assemble_task_context(prompt, project_context)
             bundle = self.prepare_prompt(project_id, role, workspace_path, prompt, project_context)
         except (ValueError, OSError) as error:
             await emit("AGENT_STATUS_CHANGE", {"status": "BLOCKED", "thought": str(error)})
@@ -260,8 +300,12 @@ class AgentRunner:
 
         errors = []
         error_code = None
+        failed_session = None
+        failed_model = None
+        failed_tokens = 0
+        failed_usage_source = 'unavailable'
         # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present)
-        if self.has_api_key and HAS_ANTIGRAVITY:
+        if self.selected_backend() == 'sdk' and not conversation_id:
             try:
                 config = LocalAgentConfig(
                     system_instructions=system_instruction,
@@ -277,16 +321,17 @@ class AgentRunner:
                     full_text = []
                     if hasattr(response, "thoughts"):
                         async for thought in response.thoughts:
-                            await emit("AGENT_THOUGHT_DELTA", {"thought": str(thought)})
+                            await emit("AGENT_PROGRESS", {"message": "AI กำลังวิเคราะห์งาน"})
                     if hasattr(response, "tool_calls"):
                         async for tool_call in response.tool_calls:
-                            await emit("TOOL_EXECUTION_START", {"tool": tool_call.name, "args": tool_call.args})
+                            await emit("TOOL_EXECUTION_START", {"tool": tool_call.name})
                     tokens_used = 0
                     if hasattr(response, "usage_metadata"):
                         tokens_used = getattr(response.usage_metadata, "total_token_count", 0) or 0
                     async for token in response:
                         full_text.append(token)
                     resp_str = "".join(full_text)
+                    usage_source = 'provider' if tokens_used else 'estimated'
                     if tokens_used == 0:
                         tokens_used = len(resp_str) // 4
                     
@@ -301,16 +346,20 @@ class AgentRunner:
                         "role": role,
                         "response": resp_str,
                         "tokens_used": tokens_used,
-                        "backend_used": "sdk",
+                        "backend_used": "sdk", "usage_source": usage_source,
                         "active_skills": [s.name for s in active_skills], "prompt_trace": bundle.trace,
                     }
             except Exception as e:
                 # An SDK may already have edited files. Never replay the task on another backend.
                 errors.append(f"SDK: {e}")
 
-        # CLI edits the workspace with tools; do not replay code fences over its changes.
-        if not errors and HAS_AGY_CLI and os.path.exists(AGY_PATH):
+        # Select the writer before invocation. Never replay failed direct edits.
+        if not errors and (self.selected_backend() == 'cli' or conversation_id) and HAS_AGY_CLI and os.path.exists(AGY_PATH):
             try:
+                file_mode = os.environ.get('AGENT_CLI_FILE_MODE', 'host-proposals')
+                if file_mode not in {'direct', 'host-proposals'}:
+                    raise ValueError('AGENT_CLI_FILE_MODE must be direct or host-proposals')
+                host_writer = not planning_only and file_mode == 'host-proposals'
                 await emit("AGENT_PROGRESS", {"message": f"เริ่มทำงานด้วย Antigravity CLI: {role}"})
                 full_query = (
                     f"{system_instruction}\n\nPM Directive: {prompt}\n\n" +
@@ -324,15 +373,81 @@ class AgentRunner:
                     "For planning roles, specify acceptance criteria, API contracts, and file ownership. "
                     f"Operate only inside {workspace_path}. Respond in the user's language."
                 )
-                text = await self._run_cli(full_query, workspace_path, emit, chat=planning_only)
+                cli_options = {'chat': planning_only}
+                if planning_only and file_mode == 'host-proposals':
+                    from app.services.workspace_session import snapshot_workspace
+                    from app.services.host_file_writer import proposal_context
+                    source_context, _ = proposal_context(workspace_path, snapshot_workspace(workspace_path), prompt)
+                    full_query += '\nSource context supplied by host (do not call tools): ' + source_context
+                if host_writer:
+                    from app.services.workspace_session import snapshot_workspace
+                    from app.services.host_file_writer import proposal_context
+                    baseline = snapshot_workspace(workspace_path)
+                    file_context, observed_paths = proposal_context(workspace_path, baseline, prompt)
+                    full_query = (f'{system_instruction}\nPM Directive: {prompt}\n'
+                        f'Workspace: {workspace_path}. Existing source is supplied below. Do not call any tools. '
+                        'This invocation prepares proposals for the host writer. Do not edit files or use terminal tools. '
+                        'Return only a JSON object {"files":[{"path":"relative/path","content":"complete file content"}],'
+                        '"summary":"changes and unrun checks"}. Include every changed file in full, no markdown fences. '
+                        'When contracts or next-owner details are needed, include an optional handoff object '
+                        'inside that JSON with summary, changed_files, contracts, checks, risks and next_owner; '
+                        'never append agent_handoff tags or prose outside JSON. '
+                        'Preserve unrelated existing content. Replace only existing files supplied in full; '
+                        'if needed files are omitted, report that blocker. Write the summary in the user\'s language. '
+                        'The host validates paths, writes files, then runs checks. '
+                        '\nSource context: ' + file_context)
+                    if len(full_query) > max(12000, min(200000, int(os.environ.get('AGENT_PROMPT_MAX_CHARS', '48000')))):
+                        raise ValueError('Host proposal prompt exceeds the context budget; narrow the task')
+                    cli_options['chat'] = True
+                if len(full_query) > max(12000, min(200000, int(os.environ.get('AGENT_PROMPT_MAX_CHARS', '48000')))):
+                    raise ValueError('CLI prompt exceeds the context budget; narrow the task')
+                if conversation_id:
+                    cli_options['conversation_id'] = conversation_id
+                async def visible_runtime(event, data):
+                    if host_writer and event == 'RUNTIME_STEP' and data.get('step_type') == 'agent_response':
+                        data = {**data, 'message': 'AI กำลังเตรียมการแก้ไฟล์ให้ backend ตรวจและเขียน'}
+                    await emit(event, data)
+                text = await self._run_cli(full_query, workspace_path, visible_runtime, **cli_options)
+                displayed_text = str(text)
+                if host_writer:
+                    from app.services.host_file_writer import apply_file_proposals
+                    try:
+                        payload = json.loads(str(text))
+                        normalized_handoff = None
+                        if isinstance(payload, dict) and 'handoff' in payload:
+                            candidate = '<agent_handoff>' + json.dumps(payload['handoff'], ensure_ascii=False) + '</agent_handoff>'
+                            normalized_handoff = json.loads(handoff_text({'response': candidate}))
+                            # Host paths below supersede model-reported paths.
+                        paths = apply_file_proposals(str(text), workspace_path, baseline, observed_paths)
+                    except ValueError as error:
+                        failure = CLIExecutionError(f'ข้อเสนอไฟล์จาก AI ไม่ผ่านการตรวจ: {error}; ยังไม่ส่งมอบงาน', 'HOST_PROPOSAL_INVALID')
+                        failure.conversation_id = getattr(text, 'conversation_id', None)
+                        failure.reported_model = getattr(text, 'reported_model', None)
+                        failure.tokens_used = getattr(text, 'tokens_used', 0) or len(text) // 4
+                        failure.usage_source = 'provider' if getattr(text, 'tokens_used', 0) else 'estimated'
+                        raise failure from error
+                    for path in paths:
+                        await emit('TOOL_EXECUTION_FINISH', {'tool': 'host_write_file', 'result': f'Saved {path}'})
+                    displayed_text = str(json.loads(str(text)).get('summary', 'Host applied file proposals'))[:4000] + '\nFiles: ' + ', '.join(paths)
+                    if normalized_handoff is not None:
+                        normalized_handoff['changed_files'] = paths
+                        normalized_handoff['verified_changed_files'] = paths
+                        displayed_text += '\n<agent_handoff>' + json.dumps(normalized_handoff, ensure_ascii=False) + '</agent_handoff>'
                 self.last_runtime_error = None
                 await emit("AGENT_STATUS_CHANGE", {"status": "DONE"})
-                return {"status": "SUCCESS", "role": role, "response": str(text),
-                        "tokens_used": getattr(text, "tokens_used", 0) or len(text) // 4, "backend_used": "cli",
+                return {"status": "SUCCESS", "role": role, "response": displayed_text,
+                        "tokens_used": getattr(text, "tokens_used", 0) or len(text) // 4,
+                        "usage_source": "provider" if getattr(text, "tokens_used", 0) else "estimated",
+                        "conversation_id": getattr(text, "conversation_id", None),
+                        "reported_model": getattr(text, "reported_model", None), "backend_used": "cli",
                         "active_skills": [s.name for s in active_skills], "prompt_trace": bundle.trace}
             except Exception as e:
                 errors.append(f"CLI: {e}")
                 error_code = getattr(e, "code", "CLI_ERROR")
+                failed_session = getattr(e, 'conversation_id', None)
+                failed_model = getattr(e, 'reported_model', None)
+                failed_tokens = getattr(e, 'tokens_used', 0)
+                failed_usage_source = getattr(e, 'usage_source', 'unavailable')
                 self.last_runtime_error = {"code": error_code, "message": str(e)}
 
         message = " | ".join(errors) or self.runtime_status()["message"]
@@ -340,7 +455,9 @@ class AgentRunner:
         await emit("AGENT_ERROR", {"message": message})
         return {"status": "FAILED", "role": role, "response": message, "error": message,
                 "error_code": error_code,
-                "tokens_used": 0, "backend_used": "sdk" if errors and errors[0].startswith("SDK") else "cli" if errors else "unavailable",
+                "conversation_id": failed_session, "reported_model": failed_model,
+                "tokens_used": failed_tokens, "usage_source": failed_usage_source,
+                "backend_used": "sdk" if errors and errors[0].startswith("SDK") else "cli" if errors else "unavailable",
                 "active_skills": [s.name for s in active_skills]}
 
     async def dispatch_chat_task(
@@ -406,7 +523,7 @@ class AgentRunner:
         tokens_used = 0
 
         # 1. Live Antigravity Python SDK Execution (if GEMINI_API_KEY is present and not in mock mode)
-        if not self.use_mock and self.has_api_key and HAS_ANTIGRAVITY:
+        if self.selected_backend() == 'sdk':
             try:
                 config = LocalAgentConfig(
                     system_instructions=system_instruction,
@@ -435,7 +552,7 @@ class AgentRunner:
             except Exception as e:
                 errors.append(f"SDK: {e}")
 
-        if not response_text and not errors and not self.use_mock and HAS_AGY_CLI and os.path.exists(AGY_PATH):
+        if not response_text and not errors and self.selected_backend() == 'cli':
             try:
                 response_text = await self._run_cli(full_prompt, workspace_path, emit, chat=True)
                 self.last_runtime_error = None

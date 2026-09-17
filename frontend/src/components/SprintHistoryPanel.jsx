@@ -130,7 +130,7 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
                       ↺ Re-run
                     </button>
                   )}
-                  {onRetry && ['FAILED', 'REJECTED'].includes(sp.status) && sp.checkpoint_path && ['QA', 'REVIEWER', 'FINAL'].includes(sp.execution_plan?.checkpoint_stage) && (
+                  {onRetry && ['FAILED', 'REJECTED', 'PAUSED', 'INTERRUPTED'].includes(sp.status) && sp.checkpoint_path && sp.execution_plan?.checkpoint_manifest_hash && ['PLANNING', 'IMPLEMENTATION', 'QA', 'REVIEWER', 'FINAL'].includes(sp.execution_plan?.checkpoint_stage) && (
                     <button className="sprint-rerun-btn" onClick={() => onRetry(sp, 'QA')} title="ตรวจ QA และ Review ต่อจากไฟล์ที่เก็บไว้ แล้วนำเข้าโปรเจกต์เมื่อผ่านขั้นตรวจ">
                       ▶ ตรวจต่อและนำไฟล์ไปใช้
                     </button>
@@ -161,6 +161,16 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
               {/* Granular Task Breakdown Accordion */}
               {isExpanded && (
                 <div className="sprint-tasks-breakdown">
+                  {sp.execution_plan?.product_brief && <section>
+                    <strong>สิ่งที่ต้องการให้ผู้ใช้ทำได้</strong>
+                    <p>{sp.execution_plan.product_brief.outcome}</p>
+                    {(sp.execution_plan.product_brief.constraints || []).map((item, i) => <div key={i}>ข้อกำหนด: {item}</div>)}
+                    {(sp.execution_plan.product_brief.assumptions || []).map((item, i) => <div key={i}>ข้อสมมติ: {item}</div>)}
+                    {(sp.execution_plan.product_brief.out_of_scope || []).map((item, i) => <div key={i}>นอกขอบเขต: {item}</div>)}
+                  </section>}
+                  {sp.execution_plan?.task_graph?.length > 0 && <details><summary>ลำดับงานและความสัมพันธ์</summary>
+                    <ol>{sp.execution_plan.task_graph.map(item => <li key={item.id}>{item.title} · {item.role} · {item.write_policy === 'READ_ONLY' ? 'ตรวจผล' : 'ทำงานในไฟล์พักงาน'}</li>)}</ol>
+                  </details>}
                   <div className="sprint-report-grid">
                     <section>
                       <strong>Acceptance criteria</strong>
@@ -169,6 +179,8 @@ export default function SprintHistoryPanel({ sprints = [], onRerun, onRetry }) {
                     <section>
                       <strong>Verification</strong>
                       <p>{sp.verification_report?.status || 'Not recorded'} {sp.verification_report?.stage ? `(${sp.verification_report.stage})` : ''}</p>
+                      {sp.verification_report?.readiness && <p>ขอบเขต: {sp.verification_report.readiness === 'AUTOMATED_CHECKS_ONLY' ? 'ผ่าน automated checks; ยังไม่ใช่การตรวจรับครบทุก requirement' : 'ตรวจ source; ไม่ได้ยืนยันด้วย tests'}</p>}
+                      {(sp.verification_report?.acceptance_coverage || []).map(item => <div key={item.id}>{item.id}: {item.status === 'VERIFIED_BY_CHECK' ? 'ผ่าน checks ที่ผูกกับ requirement' : item.status === 'NOT_INDEPENDENTLY_VERIFIED' ? 'ยังไม่ตรวจรับอย่างอิสระ' : item.status} — {item.description}</div>)}
                       {(sp.verification_report?.checks || []).map((check, index) => <div key={index}>{check.status === 'PASSED' ? '✅' : check.status === 'WARNING' ? '⚠️' : '❌'} {check.name}</div>)}
                     </section>
                     <section>

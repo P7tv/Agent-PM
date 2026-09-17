@@ -9,6 +9,7 @@ import shutil
 import uuid
 import asyncio
 import subprocess
+import signal
 import shlex
 from pathlib import Path
 from app.services.state_store import StateStore
@@ -21,7 +22,9 @@ from app.services.skill_manager import SkillManager
 from app.services.console_service import ConsoleService, parse_target_role, is_actionable_directive
 from app.services.verification import load_project_config, detect_verification_commands
 from app.services.sprint_queue import SprintQueue
+from app.services.workspace_session import WorkspaceSession
 from app.api.websocket_hub import hub
+from app.services.event_journal import EventJournal
 from app.models.schemas import (
     DownloadSkillRequest, AssignSkillRequest, SkillAddRequest, SkillRemoveRequest,
     SetSkillModeRequest, SprintRecord, QueueItem, CustomAgentCreateRequest, AutoGenerateRosterRequest,
@@ -33,6 +36,7 @@ router = APIRouter(prefix="/api")
 # Default database in project directory
 db_path = os.environ.get("PM_STATE_DB") or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "state.db")
 store = StateStore(db_path=db_path)
+hub.journal = EventJournal(db_path)
 pm = ProjectManager(store=store)
 runner = AgentRunner(use_mock=False, store=store)
 orchestrator = Orchestrator(store=store, project_manager=pm, agent_runner=runner)
@@ -42,9 +46,12 @@ git_svc = GitService()
 skill_manager = SkillManager()
 console_svc = ConsoleService(store=store)
 preview_processes = {}
+preview_sources = {}
+preview_sessions = {}
+preview_locks = {}
 
 
-def _preview_spec(project):
+def _preview_spec(project, workspace_override=None):
     config = load_project_config(project.workspace_path)
     preview = config.get("preview", {}) if isinstance(config.get("preview"), dict) else {}
     command = preview.get("command")
@@ -54,7 +61,7 @@ def _preview_spec(project):
         args = command
     else:
         args = []
-    root = Path(project.workspace_path).resolve()
+    root = Path(workspace_override or project.workspace_path).resolve()
     cwd = (root / str(preview.get("cwd", "."))).resolve()
     try:
         cwd.relative_to(root)
@@ -66,14 +73,31 @@ def _preview_spec(project):
 
 
 async def _stop_preview(project_id: str):
+    async with preview_locks.setdefault(project_id, asyncio.Lock()):
+        await _stop_preview_unlocked(project_id)
+
+
+async def _stop_preview_unlocked(project_id: str):
     process = preview_processes.pop(project_id, None)
     if process and process.poll() is None:
-        process.terminate()
+        if os.name != 'nt':
+            try: os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError: pass
+        else:
+            process.terminate()
         try:
             await asyncio.to_thread(process.wait, 5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            if os.name != 'nt':
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+            else:
+                process.kill()
             await asyncio.to_thread(process.wait, 5)
+    session = preview_sessions.pop(project_id, None)
+    if session:
+        session.close(delete=False)
+    preview_sources.pop(project_id, None)
 
 class SkillUpdateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=512 * 1024)
@@ -154,11 +178,11 @@ class ApprovalDecisionRequest(BaseModel):
     feedback: str = ""
 
 class RetrySprintRequest(BaseModel):
-    stage: Literal["QA", "REVIEWER", "FINAL"] = "QA"
+    stage: Literal["PLANNING", "IMPLEMENTATION", "QA", "REVIEWER", "FINAL"] = "QA"
 
 class WhisperRequest(BaseModel):
     role: str
-    message: str
+    message: str = Field(min_length=1, max_length=4000)
 
 class ValidatePathRequest(BaseModel):
     path: str
@@ -220,6 +244,18 @@ def validate_path(req: ValidatePathRequest):
         "message": msg,
         "metadata": meta
     }
+
+@router.get("/runtime/probe")
+async def probe_runtime():
+    from app.services.agent_runner import AGY_PATH
+    from app.services.runtime_adapter import AntigravityAdapter
+    if runner.selected_backend() != 'cli':
+        return {**runner.runtime_status(), 'probe_status': 'NOT_RUN'}
+    try:
+        return await AntigravityAdapter(AGY_PATH).get_capabilities(str(Path(db_path).parent))
+    except (OSError, TimeoutError) as error:
+        return {'probe_status': 'FAILED', 'error': str(error)}
+
 
 @router.get("/runtime")
 def get_runtime():
@@ -299,22 +335,38 @@ async def retry_sprint(project_id: str, sprint_id: str, req: RetrySprintRequest)
     sprint = store.get_sprint(sprint_id)
     if not sprint or sprint.project_id != project_id:
         raise HTTPException(status_code=404, detail="Sprint not found for this project")
-    if sprint.status not in {"FAILED", "REJECTED"}:
+    if sprint.status not in {"FAILED", "REJECTED", "PAUSED", "INTERRUPTED"}:
         raise HTTPException(status_code=409, detail="Only failed or rejected sprints can be retried")
     if not sprint.checkpoint_path or not os.path.isdir(sprint.checkpoint_path):
         raise HTTPException(status_code=409, detail="This sprint has no preserved checkpoint")
     plan = sprint.execution_plan or {}
-    if plan.get("checkpoint_stage") not in {"QA", "REVIEWER", "FINAL"}:
+    if plan.get('ownership_violation'):
+        raise HTTPException(status_code=409, detail='Checkpoint contains edits outside task ownership; inspect its files and start a new run.')
+    if plan.get("checkpoint_stage") not in {"PLANNING", "IMPLEMENTATION", "QA", "REVIEWER", "FINAL"}:
         raise HTTPException(status_code=409, detail="Implementation did not finish. Re-run the directive instead of resuming QA.")
     if sprint.change_evidence.get("applied_to_project") is True:
         raise HTTPException(status_code=409, detail="Checkpoint changes have already been applied to the project.")
+    if project_id in orchestrator._active_projects:
+        raise HTTPException(status_code=409, detail='Agent process is still stopping. Wait for pause to finish before Resume.')
     if any(item.status == "RUNNING" for item in store.get_sprints(project_id)):
         raise HTTPException(status_code=409, detail="This project already has an active sprint. Wait for it to finish before resuming.")
-    for pending in sprint_queue.list_queue(project_id):
-        if pending.source_sprint_id == sprint_id:
+    for pending in store.get_all_queue_items():
+        if pending.project_id == project_id and pending.source_sprint_id == sprint_id:
             return pending
+    manifest_hash = plan.get("checkpoint_manifest_hash")
+    if not manifest_hash:
+        raise HTTPException(status_code=409, detail="Legacy checkpoint has no initial baseline. Inspect or recover its files instead of automatic Resume.")
+    try:
+        manifest = WorkspaceSession.load_checkpoint_manifest(sprint.checkpoint_path, manifest_hash)
+        project = store.get_project(project_id)
+        if not project or manifest["original"] != str(Path(project.workspace_path).resolve()):
+            raise ValueError("Checkpoint belongs to another workspace")
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    if preview_sources.get(project_id, {}).get('scope') == 'CHECKPOINT':
+        await _stop_preview(project_id)
     item = sprint_queue.enqueue(
-        project_id, sprint.directive,
+        project_id, sprint.directive, priority="URGENT",
         acceptance_criteria=plan.get("acceptance_criteria", []),
         protected_paths=plan.get("protected_paths", []),
         source_sprint_id=sprint_id, resume_from=req.stage,
@@ -345,30 +397,66 @@ def get_preview_status(project_id: str):
     process = preview_processes.get(project_id)
     config = load_project_config(project.workspace_path)
     preview = config.get("preview", {}) if isinstance(config.get("preview"), dict) else {}
-    return {"running": bool(process and process.poll() is None), "url": preview.get("url")}
+    return {"running": bool(process and process.poll() is None), "url": preview.get("url"),
+            **preview_sources.get(project_id, {"scope": "PROJECT"})}
 
 @router.post("/projects/{project_id}/preview")
-async def start_preview(project_id: str):
+async def start_preview(project_id: str, sprint_id: Optional[str] = None):
+    async with preview_locks.setdefault(project_id, asyncio.Lock()):
+        return await _start_preview_locked(project_id, sprint_id)
+
+
+async def _start_preview_locked(project_id: str, sprint_id: Optional[str] = None):
     project = store.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     existing = preview_processes.get(project_id)
+    source = preview_sources.get(project_id, {})
     if existing and existing.poll() is None:
-        return {"running": True, "url": load_project_config(project.workspace_path).get("preview", {}).get("url")}
-    args, cwd, url = _preview_spec(project)
+        if source.get('sprint_id') == sprint_id:
+            return {"running": True, "url": load_project_config(project.workspace_path).get("preview", {}).get("url"), **source}
+        await _stop_preview_unlocked(project_id)
+    execution_workspace = project.workspace_path
+    if sprint_id:
+        sprint = store.get_sprint(sprint_id)
+        if not sprint or sprint.project_id != project_id:
+            raise HTTPException(status_code=404, detail='Sprint not found for this project')
+        active_queue = any(item.project_id == project_id for item in store.get_all_queue_items())
+        if sprint.status not in {'PAUSED', 'INTERRUPTED', 'FAILED', 'REJECTED'} or project_id in orchestrator._active_projects or active_queue:
+            raise HTTPException(status_code=409, detail='Checkpoint preview requires a stopped sprint')
+        try:
+            Path(sprint.checkpoint_path or '').resolve().relative_to(Path(db_path).resolve().parent / '.agentpm-runs')
+            manifest_hash = sprint.execution_plan.get('checkpoint_manifest_hash')
+            if not manifest_hash: raise ValueError('Checkpoint has no trusted baseline')
+            session = WorkspaceSession(project.workspace_path, reuse_path=sprint.checkpoint_path,
+                                       expected_manifest_hash=manifest_hash)
+            execution_workspace = str(session.workspace)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error))
+        args, cwd, url = _preview_spec(project, execution_workspace)
+        preview_sessions[project_id] = session
+        try:
+            await asyncio.to_thread(session.mount_dependencies)
+        except Exception:
+            await _stop_preview_unlocked(project_id)
+            raise
+    args, cwd, url = _preview_spec(project, execution_workspace)
     try:
         process = await asyncio.to_thread(
             subprocess.Popen, args, cwd=cwd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
         )
     except OSError as exc:
+        await _stop_preview_unlocked(project_id)
         raise HTTPException(status_code=500, detail=f"Could not start preview: {exc}")
     preview_processes[project_id] = process
+    preview_sources[project_id] = {'scope': 'CHECKPOINT' if sprint_id else 'PROJECT',
+                                   'sprint_id': sprint_id, 'workspace': execution_workspace}
     await asyncio.sleep(0.25)
     if process.poll() is not None:
-        preview_processes.pop(project_id, None)
+        await _stop_preview_unlocked(project_id)
         raise HTTPException(status_code=500, detail="Preview process exited during startup")
-    return {"running": True, "url": url}
+    return {"running": True, "url": url, **preview_sources.get(project_id, {})}
 
 @router.delete("/projects/{project_id}/preview")
 async def stop_preview(project_id: str):
@@ -816,6 +904,12 @@ def get_project_approvals(project_id: str):
 async def resolve_approval(project_id: str, request_id: str, req: ApprovalDecisionRequest):
     if not any(a.request_id == request_id for a in store.get_pending_approvals(project_id)):
         raise HTTPException(status_code=404, detail="Pending approval not found for this project")
+    approval = next(item for item in store.get_pending_approvals(project_id) if item.request_id == request_id)
+    if approval.gate_type == 'PLAN_APPROVAL' and req.decision == 'APPROVED':
+        active = next((item for item in store.get_sprints(project_id) if item.status == 'RUNNING'), None)
+        questions = (active.execution_plan.get('product_brief', {}).get('questions', []) if active else [])
+        if any(item.get('blocking') and item.get('status') == 'OPEN' for item in questions) and not req.feedback.strip():
+            raise HTTPException(status_code=409, detail='กรุณาตอบคำถามที่ต้องทราบก่อนเริ่มในช่อง feedback แล้วจึงอนุมัติ')
     store.resolve_approval(request_id, req.decision)
     # Signal the orchestrator to unblock the pipeline
     orchestrator.resolve_gate(request_id, req.decision, req.feedback)
@@ -829,48 +923,48 @@ async def resolve_approval(project_id: str, request_id: str, req: ApprovalDecisi
 
 @router.post("/projects/{project_id}/whisper")
 async def whisper_to_agent(project_id: str, req: WhisperRequest, bg: BackgroundTasks):
-    p = store.get_project(project_id)
-    if not p:
+    registered_agent(project_id, req.role)
+    active = next((item for item in store.get_sprints(project_id) if item.status == "RUNNING"), None)
+    if not active:
+        raise HTTPException(status_code=409, detail="ยังไม่มี Sprint ที่กำลังทำงาน ใช้โหมดปรึกษาหรือสั่งงานทีมเพื่อเริ่มงาน")
+    if active.execution_plan.get("checkpoint_stage") == "FINAL":
+        raise HTTPException(status_code=409, detail="กำลังนำไฟล์เข้าโปรเจกต์ ส่งข้อกำหนดนี้ในรอบถัดไป")
+    scheduled_roles = {'TechLead', 'Architect'} | set(active.execution_plan.get('roles', [])) | set(active.execution_plan.get('quality_roles', []))
+    if req.role not in scheduled_roles:
+        raise HTTPException(status_code=409, detail="Agent นี้ยังไม่มีขั้นตอนในแผนของรอบงาน รอแผนหรือส่งข้อกำหนดให้ TechLead")
+    if not req.message.strip():
+        raise HTTPException(status_code=422, detail="Instruction must not be blank")
+    if sum(len(item['message']) for item in store.get_sprint_instructions(active.sprint_id)) + len(req.message) > 8000:
+        raise HTTPException(status_code=409, detail="ข้อกำหนดเพิ่มเติมยาวเกินขนาดของรอบนี้ กรุณาแยกเป็นงานรอบถัดไป")
+    instruction = store.add_sprint_instruction(project_id, active.sprint_id, req.role, req.message.strip())
+    store.add_console_message(project_id, 'system', f"เก็บข้อกำหนดให้ {req.role} รอขั้นถัดไป: {req.message.strip()}", msg_type='system')
+    await hub.broadcast("AGENT_WHISPER_RECEIVED", instruction)
+    return {"status": "INSTRUCTION_QUEUED", "role": req.role, "instruction_id": instruction["instruction_id"],
+            "message": "เก็บข้อกำหนดแล้ว จะนำไปใช้เมื่อ agent เริ่มขั้นถัดไป ไม่ได้แทรกกลางคำสั่งที่กำลังรัน"}
+
+@router.get("/projects/{project_id}/sprints/{sprint_id}/attempts")
+def get_sprint_attempts(project_id: str, sprint_id: str):
+    sprint = store.get_sprint(sprint_id)
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
+    import json
+    return [{**{key: value for key, value in attempt.items() if key != 'result_json'},
+             'usage': json.loads(attempt['result_json'])} for attempt in store.get_attempts(sprint_id)]
+
+
+@router.get("/projects/{project_id}/events")
+def get_run_events(project_id: str, after: int = 0, limit: int = 200):
+    if not store.get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-        
-    async def run_whisper():
-        store.set_agent_status(project_id, req.role, "THINKING", f"PM whispered: {req.message}")
-        await hub.broadcast("AGENT_WHISPER_RECEIVED", {
-            "project_id": project_id,
-            "role": req.role,
-            "message": req.message
-        })
-        meta = store.get_project_metadata(project_id)
-        try:
-            res = await runner.dispatch_agent_task(
-                project_id=project_id,
-                role=req.role,
-                prompt=f"PM Directive: {req.message}",
-                workspace_path=p.workspace_path,
-                project_context=meta,
-                event_callback=hub.broadcast
-            )
-            if res.get("status") != "SUCCESS":
-                raise RuntimeError(res.get("error") or res.get("response") or "AI failed")
-            final_thought = res.get("response") or f"Acknowledged: {req.message}"
-            store.set_agent_status(project_id, req.role, "IDLE", final_thought)
-            await hub.broadcast("AGENT_STATE_UPDATE", {
-                "project_id": project_id,
-                "role": req.role,
-                "status": "IDLE",
-                "thought": final_thought
-            })
-        except Exception as e:
-            store.set_agent_status(project_id, req.role, "IDLE", f"Note: {str(e)}")
-            await hub.broadcast("AGENT_STATE_UPDATE", {
-                "project_id": project_id,
-                "role": req.role,
-                "status": "IDLE",
-                "thought": f"Note: {str(e)}"
-            })
-        
-    bg.add_task(run_whisper)
-    return {"status": "WHISPER_SENT", "role": req.role}
+    return hub.journal.replay(after, project_id, limit)
+
+
+@router.get("/projects/{project_id}/sprints/{sprint_id}/instructions")
+def get_sprint_instructions(project_id: str, sprint_id: str):
+    sprint = store.get_sprint(sprint_id)
+    if not sprint or sprint.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Sprint not found for this project")
+    return store.get_sprint_instructions(sprint_id)
 
 @router.post("/projects/{project_id}/directive")
 async def send_directive(project_id: str, req: DirectiveRequest):
@@ -886,6 +980,16 @@ async def send_directive(project_id: str, req: DirectiveRequest):
     )
     await hub.broadcast("QUEUE_UPDATED", {"project_id": project_id, "queue_id": item.queue_id})
     return {"status": "QUEUED", "project_id": project_id, "directive": req.directive, "queue_id": item.queue_id}
+
+@router.post("/projects/{project_id}/sprints/pause")
+async def pause_sprint(project_id: str):
+    if not store.get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not any(item.status == "RUNNING" for item in store.get_sprints(project_id)):
+        raise HTTPException(status_code=409, detail="No active sprint to pause")
+    orchestrator.pause_pipeline(project_id)
+    return {"status": "PAUSE_REQUESTED", "message": "กำลังหยุด process และเก็บไฟล์; รอให้สถานะเป็น PAUSED ก่อน Resume"}
+
 
 @router.post("/projects/{project_id}/sprints/abort")
 async def abort_sprint(project_id: str):

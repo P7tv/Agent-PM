@@ -75,6 +75,7 @@ async def test_dispatch_chat_task_sdk_execution(monkeypatch):
         async def chat(self, prompt):
             return FakeAgentResponse()
 
+    monkeypatch.setenv("AGENT_RUNTIME", "sdk")
     monkeypatch.setattr(ar_mod, "HAS_ANTIGRAVITY", True)
     monkeypatch.setattr(ar_mod, "Agent", FakeAgent)
     monkeypatch.setattr(ar_mod, "LocalAgentConfig", lambda **kwargs: None)

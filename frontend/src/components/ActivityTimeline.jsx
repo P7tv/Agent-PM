@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 
 const EVENT_CONFIG = {
+  RUNTIME_STEP: { icon: '🔧', badgeCls: 'badge-sky', label: 'ขั้นตอน AI' },
   AGENT_PROGRESS: { icon: '⏳', badgeCls: 'badge-sky', label: 'ความคืบหน้า' },
   AGENT_PROMPT_READY: { icon: '📖', badgeCls: 'badge-sky', label: 'Prompt พร้อม' },
   AGENT_ERROR: { icon: '⚠️', badgeCls: 'badge-red', label: 'ข้อผิดพลาด' },
@@ -19,12 +20,15 @@ const EVENT_CONFIG = {
   EXECUTION_PLAN_READY: { icon: '🗺️', badgeCls: 'badge-indigo', label: 'Execution Plan' },
   AGENT_EVIDENCE:       { icon: '📁', badgeCls: 'badge-emerald', label: 'File Evidence' },
   WORKSPACE_COMMITTED:  { icon: '📦', badgeCls: 'badge-green', label: 'Applied' },
+  AGENT_WHISPER_RECEIVED: { icon: '💬', badgeCls: 'badge-blue', label: 'ข้อกำหนดรอใช้' },
+  AGENT_INSTRUCTIONS_APPLIED: { icon: '✓', badgeCls: 'badge-green', label: 'ใช้ข้อกำหนดในขั้นตอนแล้ว' },
   QUEUE_ITEM_STARTED:   { icon: '⏳', badgeCls: 'badge-cyan',   label: 'Queue' },
   QUEUE_ITEM_FINISHED:  { icon: '🏁', badgeCls: 'badge-slate',  label: 'Queue Done' },
 };
 
 function getEventDescription(ev) {
   const d = ev.data || {};
+  if (ev.type === 'AGENT_WHISPER_RECEIVED') return `[${d.role}] เก็บข้อกำหนด รอขั้นถัดไป: ${d.message}`;
   if (ev.type === 'AGENT_PROMPT_READY') {
     return `${d.trace?.execution_mode || 'Agent'} · skills: ${(d.trace?.selected_skills || []).join(', ') || 'core only'}`;
   }

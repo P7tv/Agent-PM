@@ -43,7 +43,7 @@ async def test_planning_retry_is_bounded_and_disables_slash_expansion(monkeypatc
     monkeypatch.setattr(module, 'AGY_PATH', sys.executable)
     calls = []
     events = []
-    async def fake_process(args, workspace, timeout, progress):
+    async def fake_process(args, workspace, timeout, progress, stdout_line=None):
         calls.append(args)
         return cli_result({'status': 'SUCCESS', 'response': '' if len(calls) == 1 else 'Ready'})
     async def emit(kind, data):

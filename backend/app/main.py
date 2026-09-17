@@ -1,4 +1,5 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -13,7 +14,12 @@ from app.api.websocket_hub import hub
 async def lifespan(_app: FastAPI):
     """Resume durable queued directives whenever the API process starts."""
     routes_module.sprint_queue.resume_pending()
-    yield
+    try:
+        yield
+    finally:
+        await asyncio.gather(*(routes_module._stop_preview(project_id)
+                               for project_id in list(routes_module.preview_processes)),
+                             return_exceptions=True)
 
 
 app = FastAPI(title="Virtual AI Office PM Dashboard", lifespan=lifespan)

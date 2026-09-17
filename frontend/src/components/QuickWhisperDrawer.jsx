@@ -44,13 +44,13 @@ export default function QuickWhisperDrawer({
     setIsSending(true);
     try {
       if (onSendWhisper) {
-        await onSendWhisper(project.project_id, agent.role, whisperText);
+        const result = await onSendWhisper(project.project_id, agent.role, whisperText);
+        toast.success(result?.message || 'เก็บข้อกำหนดแล้ว รอ agent เริ่มขั้นถัดไป');
       }
-      toast.success(`Whisper sent to ${agent.skill_title || agent.role}`);
       setWhisperText('');
     } catch (err) {
       console.error('Failed to send whisper:', err);
-      toast.error('Failed to send whisper');
+      toast.error(err.message || 'ส่งข้อกำหนดไม่สำเร็จ');
     } finally {
       setIsSending(false);
     }
@@ -148,13 +148,14 @@ export default function QuickWhisperDrawer({
           <div className="whisper-input-section">
             <label className="whisper-section-title">
               <MessageSquare size={13} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
-              Whisper Direct Instruction
+              ข้อกำหนดเพิ่มเติมของ Sprint
             </label>
             <form onSubmit={handleSend} className="whisper-form">
               <textarea
                 className="whisper-textarea"
                 rows={3}
-                placeholder={`Type a private message or instruction to ${agent.role}...`}
+                placeholder={`ข้อกำหนดให้ ${agent.role} ใช้เมื่อเริ่มขั้นถัดไป (ไม่แทรกกลางคำสั่งที่กำลังรัน)`}
+                maxLength={4000}
                 value={whisperText}
                 onChange={(e) => setWhisperText(e.target.value)}
                 onKeyDown={(e) => {

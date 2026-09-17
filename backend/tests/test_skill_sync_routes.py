@@ -19,7 +19,9 @@ def test_get_skills_includes_tiers():
         assert "title" in s
         assert "tier" in s
 
-def test_download_online_skill_route(tmp_path):
+def test_download_online_skill_route(tmp_path, monkeypatch):
+    from app.api import routes
+    monkeypatch.setattr(routes.skill_manager, 'stock_skills_dir', str(tmp_path / 'stock'))
     # Mock download_online_skill in skill_manager
     mock_md = "---\nname: mock-skill\ntitle: Mock Skill\ndescription: A mock skill\ntier: project\n---\n# Instructions"
     
@@ -74,4 +76,3 @@ def test_assign_agent_skill_route():
     assert tl_skill is not None
     assert "security-auditor" in tl_skill["equipped_skills"]
     assert tl_skill["skill_mode"] == "MANUAL"
-

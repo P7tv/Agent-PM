@@ -11,6 +11,11 @@ READ_ONLY_MODES = {"consultation", "planning", "design", "verification-analysis"
 
 
 def mode_for_role(role):
+    normalized = re.sub(r'[^a-z]', '', role.lower())
+    if normalized in {'security', 'securityauditor', 'applicationsecurityauditor'}:
+        return 'review'
+    if normalized in {'systematicdebugger', 'debugger'}:
+        return 'verification-analysis'
     return {"TechLead": "planning", "Architect": "planning", "Designer": "design",
             "QATester": "verification-analysis", "Reviewer": "review"}.get(role, "implementation")
 

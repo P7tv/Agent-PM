@@ -1,0 +1,937 @@
+{
+  "schema_version": 1,
+  "kind": "LOCAL_HARNESS_REGRESSION",
+  "model_benchmark_status": "NOT_RUN",
+  "live_provider_calls": 0,
+  "source_note": "Local deterministic fixtures. No comparison-arm or model intelligence claim.",
+  "seconds": 20.45008416697965,
+  "pytest_exit_code": 0,
+  "tests": [
+    {
+      "name": "test_resume_preserves_human_edits_and_reports_conflict",
+      "status": "PASSED",
+      "seconds": 0.013
+    },
+    {
+      "name": "test_resume_keeps_new_human_file_and_original_baseline",
+      "status": "PASSED",
+      "seconds": 0.013
+    },
+    {
+      "name": "test_resume_rejects_missing_or_tampered_manifest",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_resume_rejects_different_project",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_internal_source_link_cannot_write_original_from_staging",
+      "status": "PASSED",
+      "seconds": 0.011
+    },
+    {
+      "name": "test_delivery_rejects_parent_link_added_while_paused",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_whisper_is_persistent_inbox_without_dispatch_or_status_change",
+      "status": "PASSED",
+      "seconds": 0.052
+    },
+    {
+      "name": "test_whisper_rejects_idle_unscheduled_and_final_delivery",
+      "status": "PASSED",
+      "seconds": 0.022
+    },
+    {
+      "name": "test_retry_rejects_legacy_checkpoint_before_enqueuing",
+      "status": "PASSED",
+      "seconds": 0.016
+    },
+    {
+      "name": "test_mid_task_instruction_applied_in_staging_and_done_tasks_survive_stop",
+      "status": "PASSED",
+      "seconds": 0.092
+    },
+    {
+      "name": "test_delivery_gate_and_verification_scope[True-test-instructions remain pending]",
+      "status": "PASSED",
+      "seconds": 0.099
+    },
+    {
+      "name": "test_delivery_gate_and_verification_scope[False-build-No successful test command]",
+      "status": "PASSED",
+      "seconds": 0.095
+    },
+    {
+      "name": "test_delivery_gate_and_verification_scope[False-test-None]",
+      "status": "PASSED",
+      "seconds": 0.086
+    },
+    {
+      "name": "test_stream_reports_tool_before_process_finishes_and_bounds_both_pipes",
+      "status": "PASSED",
+      "seconds": 0.331
+    },
+    {
+      "name": "test_provider_stream_requires_final_result_and_hides_raw_tool_data",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_journal_survives_reopen_orders_replay_and_scopes_projects",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-True-PASSED-VERIFIED_BY_CHECK]",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[old-True-PASSED-STALE_EVIDENCE]",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-False-PASSED-STALE_EVIDENCE]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-True-FAILED-FAILED]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-True-NOT_RUN-FAILED]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_pause_during_implementation_resumes_files_and_skips_completed_writer",
+      "status": "PASSED",
+      "seconds": 0.171
+    },
+    {
+      "name": "test_source_changed_after_checks_cannot_be_delivered",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_brief_preserves_user_request_and_questions_are_explicit",
+      "status": "PASSED",
+      "seconds": 0.006
+    },
+    {
+      "name": "test_blocking_user_question_cannot_be_approved_without_answer",
+      "status": "PASSED",
+      "seconds": 0.018
+    },
+    {
+      "name": "test_explicit_cli_resume_uses_exact_id_and_requests_sandbox",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_feature_graph_rejects_invalid_dependencies_ownership_and_coverage[cycle]",
+      "status": "PASSED",
+      "seconds": 0.006
+    },
+    {
+      "name": "test_feature_graph_rejects_invalid_dependencies_ownership_and_coverage[escape]",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_feature_graph_rejects_invalid_dependencies_ownership_and_coverage[missing_ac]",
+      "status": "PASSED",
+      "seconds": 0.006
+    },
+    {
+      "name": "test_feature_graph_rejects_invalid_dependencies_ownership_and_coverage[duplicate]",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_feature_tasks_execute_dependencies_and_gate_outside_edits[False]",
+      "status": "PASSED",
+      "seconds": 0.089
+    },
+    {
+      "name": "test_feature_tasks_execute_dependencies_and_gate_outside_edits[True]",
+      "status": "PASSED",
+      "seconds": 0.08
+    },
+    {
+      "name": "test_staged_config_cannot_replace_host_verification_command",
+      "status": "PASSED",
+      "seconds": 0.033
+    },
+    {
+      "name": "test_context_assembler_retains_contract_and_required_criteria",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_checkpoint_preview_uses_staged_workspace_and_preserves_original",
+      "status": "PASSED",
+      "seconds": 0.277
+    },
+    {
+      "name": "test_concurrent_resume_enqueues_share_one_active_queue_item",
+      "status": "PASSED",
+      "seconds": 0.014
+    },
+    {
+      "name": "test_resume_enqueued_during_pause_broadcast_is_not_stranded",
+      "status": "PASSED",
+      "seconds": 0.017
+    },
+    {
+      "name": "test_model_effort_variant_uses_matching_default_and_rejects_explicit_conflict",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_permission_failure_preserves_session_and_names_blocked_tool",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_concurrent_preview_starts_create_only_one_process",
+      "status": "PASSED",
+      "seconds": 0.272
+    },
+    {
+      "name": "test_missing_runtime_never_claims_success",
+      "status": "PASSED",
+      "seconds": 0.042
+    },
+    {
+      "name": "test_cli_failure_exposes_stderr",
+      "status": "PASSED",
+      "seconds": 0.027
+    },
+    {
+      "name": "test_cli_does_not_overwrite_files_from_summary",
+      "status": "PASSED",
+      "seconds": 0.025
+    },
+    {
+      "name": "test_proposals_reject_sibling_prefix_and_symlink",
+      "status": "PASSED",
+      "seconds": 0.012
+    },
+    {
+      "name": "test_process_timeout_kills_worker",
+      "status": "PASSED",
+      "seconds": 0.315
+    },
+    {
+      "name": "test_verification_uses_real_exit_codes",
+      "status": "PASSED",
+      "seconds": 2.818
+    },
+    {
+      "name": "test_missing_tests_are_not_a_pass",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_failed_agent_halts_downstream_and_persists_reason",
+      "status": "PASSED",
+      "seconds": 0.055
+    },
+    {
+      "name": "test_fast_approval_not_lost_and_chat_survives_reload",
+      "status": "PASSED",
+      "seconds": 1.524
+    },
+    {
+      "name": "test_gate_timeout_is_rejection",
+      "status": "PASSED",
+      "seconds": 0.029
+    },
+    {
+      "name": "test_abort_cancels_running_agent_without_poisoning_next_sprint",
+      "status": "PASSED",
+      "seconds": 1.467
+    },
+    {
+      "name": "test_console_context_includes_prior_session_after_new_message",
+      "status": "PASSED",
+      "seconds": 0.012
+    },
+    {
+      "name": "test_blank_directive_and_invalid_gate_decision_are_rejected",
+      "status": "PASSED",
+      "seconds": 0.016
+    },
+    {
+      "name": "test_runtime_api_returns_unavailable_without_mock_fallback",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_dashboard_security_headers_are_restrictive",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_temporary_workspace_allowed_and_system_symlink_rejected",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_restart_closes_orphaned_runtime_state",
+      "status": "PASSED",
+      "seconds": 0.018
+    },
+    {
+      "name": "test_execution_plan_selects_scope_and_reviewer_fails_closed",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_workspace_session_commits_or_discards_as_one_unit",
+      "status": "PASSED",
+      "seconds": 0.012
+    },
+    {
+      "name": "test_workspace_dependencies_are_mounted_only_for_verification",
+      "status": "PASSED",
+      "seconds": 0.011
+    },
+    {
+      "name": "test_reviewer_block_discards_staged_agent_changes",
+      "status": "PASSED",
+      "seconds": 1.444
+    },
+    {
+      "name": "test_qa_and_designer_are_read_only_cli_roles",
+      "status": "PASSED",
+      "seconds": 0.04
+    },
+    {
+      "name": "test_documentation_only_sprint_can_pass_without_test_suite",
+      "status": "PASSED",
+      "seconds": 0.102
+    },
+    {
+      "name": "test_reviewer_changes_requested_gets_one_repair_pass",
+      "status": "PASSED",
+      "seconds": 4.68
+    },
+    {
+      "name": "test_json_result_exposes_response_and_actual_usage",
+      "status": "PASSED",
+      "seconds": 0.011
+    },
+    {
+      "name": "test_zero_exit_code_does_not_hide_json_failures[payload0-PERMISSION_REQUIRED]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_zero_exit_code_does_not_hide_json_failures[payload1-AUTH_REQUIRED]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_zero_exit_code_does_not_hide_json_failures[payload2-RATE_LIMITED]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_zero_exit_code_does_not_hide_json_failures[payload3-EMPTY_RESPONSE]",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_zero_exit_code_does_not_hide_json_failures[payload4-EMPTY_RESPONSE]",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_zero_exit_code_does_not_hide_json_failures[payload5-CLI_ERROR]",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_nonzero_exit_exposes_provider_stderr",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_planning_retry_is_bounded_and_disables_slash_expansion",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_implementation_empty_result_is_never_replayed",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_audit_and_debug_roles_default_to_read_only[SecurityAuditor]",
+      "status": "PASSED",
+      "seconds": 0.018
+    },
+    {
+      "name": "test_audit_and_debug_roles_default_to_read_only[security-auditor]",
+      "status": "PASSED",
+      "seconds": 0.021
+    },
+    {
+      "name": "test_audit_and_debug_roles_default_to_read_only[SystematicDebugger]",
+      "status": "PASSED",
+      "seconds": 0.017
+    },
+    {
+      "name": "test_audit_and_debug_roles_default_to_read_only[systematic-debugger]",
+      "status": "PASSED",
+      "seconds": 0.017
+    },
+    {
+      "name": "test_audit_and_debug_roles_default_to_read_only[Debugger]",
+      "status": "PASSED",
+      "seconds": 0.016
+    },
+    {
+      "name": "test_persona_survives_progress_and_is_shared_by_chat_and_pipeline",
+      "status": "PASSED",
+      "seconds": 0.038
+    },
+    {
+      "name": "test_manual_empty_never_falls_back_to_auto_or_legacy_selection",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_manual_missing_and_invalid_skills_are_visible_without_auto_fallback",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_project_rules_always_apply_and_core_is_not_duplicated",
+      "status": "PASSED",
+      "seconds": 0.012
+    },
+    {
+      "name": "test_roles_have_their_own_core[Designer-designer]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_roles_have_their_own_core[DocWriter-doc-writer]",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_roles_have_their_own_core[Reviewer-reviewer]",
+      "status": "PASSED",
+      "seconds": 0.014
+    },
+    {
+      "name": "test_read_only_prompt_uses_analysis_not_implementation",
+      "status": "PASSED",
+      "seconds": 0.011
+    },
+    {
+      "name": "test_project_markdown_and_references_resolve_to_their_actual_sources",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_context_excerpts_are_visible_but_contracts_and_criteria_remain_intact",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_handoff_contract_uses_verified_files_and_labels_self_reported_checks",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_remove_last_skill_keeps_manual_and_clears_legacy_selection",
+      "status": "PASSED",
+      "seconds": 0.016
+    },
+    {
+      "name": "test_identity_migration_recovers_only_unchanged_descriptions",
+      "status": "PASSED",
+      "seconds": 0.025
+    },
+    {
+      "name": "test_skill_parser_failure_does_not_crash_discovery_and_thai_triggers_work",
+      "status": "PASSED",
+      "seconds": 0.017
+    },
+    {
+      "name": "test_reregister_preserves_explicit_persona",
+      "status": "PASSED",
+      "seconds": 0.027
+    },
+    {
+      "name": "test_trace_retention_does_not_pollute_activity_metrics_and_project_delete_cleans_up",
+      "status": "PASSED",
+      "seconds": 0.061
+    },
+    {
+      "name": "test_preview_and_identity_api_use_saved_persona_and_validate_skill_metadata",
+      "status": "PASSED",
+      "seconds": 0.078
+    },
+    {
+      "name": "test_queue_round_trips_acceptance_and_protected_paths",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_structured_sprint_report_round_trip",
+      "status": "PASSED",
+      "seconds": 0.01
+    },
+    {
+      "name": "test_reviewer_large_evidence_is_explicitly_bounded",
+      "status": "PASSED",
+      "seconds": 0.007
+    },
+    {
+      "name": "test_durable_workspace_checkpoint_can_resume_and_commit",
+      "status": "PASSED",
+      "seconds": 0.011
+    },
+    {
+      "name": "test_project_config_overrides_auto_detection",
+      "status": "PASSED",
+      "seconds": 0.009
+    },
+    {
+      "name": "test_preview_process_can_start_and_stop",
+      "status": "PASSED",
+      "seconds": 0.286
+    },
+    {
+      "name": "test_report_endpoint_enforces_project_ownership",
+      "status": "PASSED",
+      "seconds": 0.043
+    },
+    {
+      "name": "test_workspace_sibling_prefix_is_not_treated_as_inside",
+      "status": "PASSED",
+      "seconds": 0.027
+    },
+    {
+      "name": "test_openapi_operation_ids_are_unique",
+      "status": "PASSED",
+      "seconds": 0.074
+    },
+    {
+      "name": "test_triage_failure_cannot_resume_as_completed_implementation",
+      "status": "PASSED",
+      "seconds": 0.012
+    },
+    {
+      "name": "test_resume_deduplicates_pending_checkpoint",
+      "status": "PASSED",
+      "seconds": 0.018
+    },
+    {
+      "name": "test_resume_rejects_active_project_and_applied_checkpoint",
+      "status": "PASSED",
+      "seconds": 0.017
+    },
+    {
+      "name": "test_change_request_gate_preserves_feedback",
+      "status": "PASSED",
+      "seconds": 0.011
+    },
+    {
+      "name": "test_persisted_state_grader_rejects_seeded_bug_and_accepts_reference[E05]",
+      "status": "PASSED",
+      "seconds": 0.016
+    },
+    {
+      "name": "test_persisted_state_grader_rejects_seeded_bug_and_accepts_reference[E06]",
+      "status": "PASSED",
+      "seconds": 0.014
+    },
+    {
+      "name": "test_persisted_state_grader_rejects_seeded_bug_and_accepts_reference[E08]",
+      "status": "PASSED",
+      "seconds": 0.144
+    },
+    {
+      "name": "test_comparison_driver_uses_real_grader_with_fake_runtime[current_pipeline]",
+      "status": "PASSED",
+      "seconds": 0.285
+    },
+    {
+      "name": "test_comparison_driver_uses_real_grader_with_fake_runtime[single_coder_with_verification]",
+      "status": "PASSED",
+      "seconds": 0.11
+    },
+    {
+      "name": "test_comparison_driver_uses_real_grader_with_fake_runtime[planner_coder_evaluator_with_optional_specialists]",
+      "status": "PASSED",
+      "seconds": 0.106
+    },
+    {
+      "name": "test_comparison_driver_does_not_treat_runtime_success_as_feature_success",
+      "status": "PASSED",
+      "seconds": 0.186
+    },
+    {
+      "name": "test_batch_validation_prevents_partial_write_and_rejects_changed_baseline",
+      "status": "PASSED",
+      "seconds": 0.012
+    },
+    {
+      "name": "test_default_cli_host_writer_saves_proposals_and_reports_paths",
+      "status": "PASSED",
+      "seconds": 0.024
+    },
+    {
+      "name": "test_invalid_host_proposal_fails_without_writing_and_retains_session",
+      "status": "PASSED",
+      "seconds": 0.023
+    },
+    {
+      "name": "test_context_omits_sensitive_paths_and_cannot_replace_unobserved_file",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_host_writer_applies_files_and_preserves_existing_executable_mode",
+      "status": "PASSED",
+      "seconds": 0.008
+    },
+    {
+      "name": "test_host_writer_rejects_internal_symlink_and_duplicate_targets",
+      "status": "PASSED",
+      "seconds": 0.008
+    }
+  ],
+  "cases": [
+    {
+      "id": "E01",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E02",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E03",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E04",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E05",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_persisted_state_grader_rejects_seeded_bug_and_accepts_reference[E05]",
+          "status": "PASSED",
+          "seconds": 0.016
+        }
+      ]
+    },
+    {
+      "id": "E06",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_persisted_state_grader_rejects_seeded_bug_and_accepts_reference[E06]",
+          "status": "PASSED",
+          "seconds": 0.014
+        }
+      ]
+    },
+    {
+      "id": "E07",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E08",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_persisted_state_grader_rejects_seeded_bug_and_accepts_reference[E08]",
+          "status": "PASSED",
+          "seconds": 0.144
+        }
+      ]
+    },
+    {
+      "id": "E09",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_delivery_gate_and_verification_scope[True-test-instructions remain pending]",
+          "status": "PASSED",
+          "seconds": 0.099
+        },
+        {
+          "name": "test_delivery_gate_and_verification_scope[False-build-No successful test command]",
+          "status": "PASSED",
+          "seconds": 0.095
+        },
+        {
+          "name": "test_delivery_gate_and_verification_scope[False-test-None]",
+          "status": "PASSED",
+          "seconds": 0.086
+        }
+      ]
+    },
+    {
+      "id": "E10",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E11",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E12",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-True-PASSED-VERIFIED_BY_CHECK]",
+          "status": "PASSED",
+          "seconds": 0.007
+        },
+        {
+          "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[old-True-PASSED-STALE_EVIDENCE]",
+          "status": "PASSED",
+          "seconds": 0.007
+        },
+        {
+          "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-False-PASSED-STALE_EVIDENCE]",
+          "status": "PASSED",
+          "seconds": 0.008
+        },
+        {
+          "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-True-FAILED-FAILED]",
+          "status": "PASSED",
+          "seconds": 0.008
+        },
+        {
+          "name": "test_acceptance_cannot_pass_with_stale_or_failing_evidence[current-True-NOT_RUN-FAILED]",
+          "status": "PASSED",
+          "seconds": 0.008
+        }
+      ]
+    },
+    {
+      "id": "E13",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_pause_during_implementation_resumes_files_and_skips_completed_writer",
+          "status": "PASSED",
+          "seconds": 0.171
+        }
+      ]
+    },
+    {
+      "id": "E14",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_resume_preserves_human_edits_and_reports_conflict",
+          "status": "PASSED",
+          "seconds": 0.013
+        }
+      ]
+    },
+    {
+      "id": "E15",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_resume_keeps_new_human_file_and_original_baseline",
+          "status": "PASSED",
+          "seconds": 0.013
+        }
+      ]
+    },
+    {
+      "id": "E16",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_resume_deduplicates_pending_checkpoint",
+          "status": "PASSED",
+          "seconds": 0.018
+        }
+      ]
+    },
+    {
+      "id": "E17",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_restart_closes_orphaned_runtime_state",
+          "status": "PASSED",
+          "seconds": 0.018
+        }
+      ]
+    },
+    {
+      "id": "E18",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_mid_task_instruction_applied_in_staging_and_done_tasks_survive_stop",
+          "status": "PASSED",
+          "seconds": 0.092
+        }
+      ]
+    },
+    {
+      "id": "E19",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_context_excerpts_are_visible_but_contracts_and_criteria_remain_intact",
+          "status": "PASSED",
+          "seconds": 0.01
+        }
+      ]
+    },
+    {
+      "id": "E20",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_missing_runtime_never_claims_success",
+          "status": "PASSED",
+          "seconds": 0.042
+        }
+      ]
+    },
+    {
+      "id": "E21",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_planning_retry_is_bounded_and_disables_slash_expansion",
+          "status": "PASSED",
+          "seconds": 0.01
+        }
+      ]
+    },
+    {
+      "id": "E22",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E23",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_feature_tasks_execute_dependencies_and_gate_outside_edits[False]",
+          "status": "PASSED",
+          "seconds": 0.089
+        },
+        {
+          "name": "test_feature_tasks_execute_dependencies_and_gate_outside_edits[True]",
+          "status": "PASSED",
+          "seconds": 0.08
+        }
+      ]
+    },
+    {
+      "id": "E24",
+      "priority": "critical",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E25",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E26",
+      "priority": "high",
+      "benchmark_status": "NOT_RUN",
+      "harness_regression_status": "PASSED",
+      "evidence": [
+        {
+          "name": "test_journal_survives_reopen_orders_replay_and_scopes_projects",
+          "status": "PASSED",
+          "seconds": 0.01
+        }
+      ]
+    }
+  ],
+  "log_tail": "........................................................................ [ 59%]\n..................................................                       [100%]\n=============================== warnings summary ===============================\n../anaconda3/lib/python3.10/site-packages/fastapi/testclient.py:1\n  /Users/panpan/anaconda3/lib/python3.10/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\nbackend/tests/test_workflow_safety.py: 4 warnings\nbackend/tests/test_durable_workflow.py: 11 warnings\nbackend/tests/test_execution_reliability.py: 15 warnings\nbackend/tests/test_cli_print_result.py: 2 warnings\nbackend/tests/test_prompt_system.py: 1 warning\nbackend/tests/test_pipeline_features.py: 1 warning\nbackend/tests/test_behavioral_eval_fixtures.py: 4 warnings\nbackend/tests/test_host_file_writer.py: 2 warnings\n  /Users/panpan/anaconda3/lib/python3.10/site-packages/pytest_asyncio/plugin.py:894: DeprecationWarning: There is no current event loop\n    _loop = asyncio.get_event_loop()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n- generated xml file: /var/folders/f6/fywm6dlx0hd71c4xn4ns3bkw0000gn/T/agentpm-eval-5zb1lmq2/results.xml -\n122 passed, 41 warnings in 18.70s\n"
+}

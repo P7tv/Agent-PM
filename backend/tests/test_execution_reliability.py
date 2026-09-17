@@ -250,10 +250,10 @@ def test_restart_closes_orphaned_runtime_state(tmp_path):
 
     recovered = StateStore(db_path)
     sprint = recovered.get_sprint('old')
-    assert sprint.status == 'FAILED'
+    assert sprint.status == 'INTERRUPTED'
     assert 'restarted' in sprint.release_summary.lower()
     recovered_task = next(item for item in recovered.get_tasks('p') if item.task_id == task.task_id)
-    assert recovered_task.status == 'FAILED'
+    assert recovered_task.status == 'INTERRUPTED'
     assert recovered.get_pending_approvals('p') == []
 
 

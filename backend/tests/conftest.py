@@ -14,15 +14,21 @@ def isolated_db(monkeypatch):
     with a temporary database for every test, preventing test pollution.
     """
     tmpdir = tempfile.mkdtemp()
+    # Legacy CLI protocol doubles return prose. Host-writer tests explicitly
+    # unset/override this to exercise the production JSON proposal default.
+    monkeypatch.setenv('AGENT_CLI_FILE_MODE', 'direct')
     test_db_path = os.path.join(tmpdir, "test_state.db")
     test_store = StateStore(db_path=test_db_path)
 
     # Patch the global singletons in routes module
     import app.api.routes as routes_module
+    monkeypatch.setattr(routes_module, 'preview_locks', {})
     from app.services.project_manager import ProjectManager
     from app.services.agent_runner import AgentRunner
     from app.services.orchestrator import Orchestrator
 
+    from app.services.event_journal import EventJournal
+    monkeypatch.setattr(routes_module.hub, "journal", EventJournal(test_db_path))
     test_pm = ProjectManager(store=test_store)
     test_runner = AgentRunner(use_mock=True)
     test_orchestrator = Orchestrator(store=test_store, project_manager=test_pm, agent_runner=test_runner)

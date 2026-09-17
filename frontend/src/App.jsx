@@ -335,11 +335,12 @@ function AppContent() {
     let disposed = false;
     let reconnectTimer;
     let hasConnected = false;
+    let lastSequence = 0;
 
     const connectWs = () => {
       if (disposed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/live`;
+      const wsUrl = `${protocol}//${window.location.host}/ws/live${lastSequence ? `?after=${lastSequence}` : ''}`;
       const ws = new WebSocket(wsUrl);
       socketRef.current = ws;
 
@@ -353,10 +354,12 @@ function AppContent() {
       ws.onmessage = (event) => {
         try {
           const parsed = JSON.parse(event.data);
+          if (parsed.sequence && parsed.sequence <= lastSequence) return;
+          if (parsed.sequence) lastSequence = parsed.sequence;
           const evType = parsed.event;
           const data = parsed.data;
           const projId = data.project_id;
-          if (notificationsRef.current && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          if (!parsed.replayed && notificationsRef.current && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
             if (evType === 'DECISION_GATE_OPEN') new Notification('Agent PM รอการตัดสินใจ', { body: data.summary || 'มีแผนงานรออนุมัติ' });
             if (evType === 'PIPELINE_COMPLETED') new Notification('Sprint เสร็จแล้ว', { body: data.directive || data.summary || '' });
             if (['PIPELINE_HALTED', 'PIPELINE_REJECTED'].includes(evType)) new Notification('Sprint หยุดทำงาน', { body: data.summary || '' });
@@ -381,6 +384,9 @@ function AppContent() {
             }));
           }
 
+          // Replayed events rebuild history. Current REST snapshots own state;
+          // do not re-open an old approval or completion dialog during replay.
+          if (parsed.replayed) return;
           // Handle state updates
           if (['AGENT_STATE_UPDATE', 'AGENT_STATUS_CHANGE', 'AGENT_THOUGHT_DELTA', 'AGENT_PROGRESS'].includes(evType)) {
             setAgentStates(prev => {
@@ -504,7 +510,7 @@ function AppContent() {
   };
 
   const handleSendWhisper = async (projectId, role, message) => {
-    await requestJson(`/api/projects/${projectId}/whisper`, {
+    return await requestJson(`/api/projects/${projectId}/whisper`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role, message })

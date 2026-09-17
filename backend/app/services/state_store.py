@@ -138,6 +138,11 @@ class StateStore:
 
             conn.execute("""CREATE TABLE IF NOT EXISTS agent_prompt_traces (
                 trace_id TEXT PRIMARY KEY,project_id TEXT,role TEXT,trace_json TEXT,created_at REAL)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS sprint_instructions (
+                instruction_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                sprint_id TEXT NOT NULL, role TEXT NOT NULL, message TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING', parent_id TEXT,
+                created_at REAL NOT NULL, applied_at REAL)""")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS approvals (
                     request_id TEXT PRIMARY KEY,
@@ -267,19 +272,50 @@ class StateStore:
                     created_at REAL NOT NULL
                 )
             """)
+            conn.execute("""CREATE TABLE IF NOT EXISTS execution_attempts (
+                attempt_id TEXT PRIMARY KEY, sprint_id TEXT NOT NULL, role TEXT NOT NULL,
+                workspace TEXT NOT NULL, status TEXT NOT NULL, conversation_id TEXT,
+                started_at REAL NOT NULL, completed_at REAL, result_json TEXT DEFAULT '{}')""")
+            try:
+                conn.execute("ALTER TABLE execution_attempts ADD COLUMN task_key TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute("UPDATE execution_attempts SET status='INTERRUPTED'  WHERE status='RUNNING'")
             # Cleanup orphaned running tasks or agent states from abrupt server shutdowns
             now = time.time()
             conn.execute("UPDATE directive_queue SET status = 'CANCELLED' WHERE status = 'RUNNING'")
             conn.execute("UPDATE agent_states SET status = 'IDLE' WHERE status IN ('WORKING', 'THINKING', 'TESTING', 'REVIEWING')")
             conn.execute(
-                """UPDATE sprints SET status = 'FAILED', completed_at = ?,
-                   release_summary = 'Backend restarted before this sprint completed.'
+                """UPDATE sprints SET status = 'INTERRUPTED', completed_at = ?,
+                   release_summary = 'Backend restarted; checkpoint preserved. Resume reconciles unfinished work.'
                    WHERE status = 'RUNNING'""",
                 (now,),
             )
-            conn.execute("UPDATE tasks SET status = 'FAILED', updated_at = ? WHERE status IN ('IN_PROGRESS', 'TESTING', 'REVIEW')", (now,))
+            conn.execute("UPDATE tasks SET status = 'INTERRUPTED', updated_at = ? WHERE status IN ('IN_PROGRESS', 'TESTING', 'REVIEW')", (now,))
             conn.execute("UPDATE approvals SET status = 'REJECTED' WHERE status = 'PENDING'")
             conn.commit()
+
+    def start_attempt(self, sprint_id, role, workspace, task_key=None):
+        attempt_id = str(uuid.uuid4())
+        with self._get_conn() as conn:
+            conn.execute("INSERT INTO execution_attempts(attempt_id,sprint_id,role,workspace,status,started_at,task_key) VALUES(?,?,?,?,?,?,?)",
+                         (attempt_id, sprint_id, role, workspace, "RUNNING", time.time(), task_key or role))
+            conn.commit()
+        return attempt_id
+
+    def update_attempt(self, attempt_id, status=None, conversation_id=None, result=None):
+        with self._get_conn() as conn:
+            if conversation_id:
+                conn.execute("UPDATE execution_attempts SET conversation_id=? WHERE attempt_id=?", (conversation_id, attempt_id))
+            if status:
+                conn.execute("UPDATE execution_attempts SET status=?,completed_at=?,result_json=? WHERE attempt_id=?",
+                             (status, time.time(), json.dumps(result or {}, ensure_ascii=False), attempt_id))
+            conn.commit()
+
+    def get_attempts(self, sprint_id):
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute("SELECT * FROM execution_attempts WHERE sprint_id=? ORDER BY started_at", (sprint_id,))]
 
     def create_project(self, project_id: str, name: str, workspace_path: str, auto_pilot: bool = False, metadata: Optional[Dict[str, Any]] = None) -> Project:
         now = time.time()
@@ -574,6 +610,9 @@ class StateStore:
             conn.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_states WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM approvals WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM execution_attempts WHERE sprint_id IN (SELECT sprint_id FROM sprints WHERE project_id = ?)", (project_id,))
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_events'").fetchone():
+                conn.execute("DELETE FROM run_events WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM sprints WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM directive_queue WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM console_messages WHERE project_id = ?", (project_id,))
@@ -581,7 +620,44 @@ class StateStore:
             conn.execute("DELETE FROM project_memories WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_activity_logs WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_prompt_traces WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM sprint_instructions WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM agent_sprint_logs WHERE project_id = ?", (project_id,))
+            conn.commit()
+
+    def add_sprint_instruction(self, project_id, sprint_id, role, message):
+        instruction_id = uuid.uuid4().hex
+        with self._get_conn() as conn:
+            conn.execute("INSERT INTO sprint_instructions VALUES (?,?,?,?,?,'PENDING',NULL,?,NULL)",
+                         (instruction_id, project_id, sprint_id, role, message, time.time()))
+            conn.commit()
+        return next(item for item in self.get_sprint_instructions(sprint_id) if item['instruction_id'] == instruction_id)
+
+    def get_sprint_instructions(self, sprint_id, role=None, status=None):
+        query = "SELECT instruction_id,project_id,sprint_id,role,message,status,parent_id,created_at,applied_at FROM sprint_instructions WHERE sprint_id=?"
+        args = [sprint_id]
+        if role:
+            query += " AND role=?"
+            args.append(role)
+        if status:
+            query += " AND status=?"
+            args.append(status)
+        query += " ORDER BY created_at,instruction_id"
+        with self._get_conn() as conn:
+            return [dict(zip(('instruction_id','project_id','sprint_id','role','message','status','parent_id','created_at','applied_at'), row)) for row in conn.execute(query,args)]
+
+    def mark_sprint_instructions_applied(self, instruction_ids):
+        with self._get_conn() as conn:
+            conn.executemany("UPDATE sprint_instructions SET status='APPLIED',applied_at=? WHERE instruction_id=? AND status='PENDING'",
+                             [(time.time(), item) for item in instruction_ids])
+            conn.commit()
+
+    def inherit_sprint_instructions(self, source_sprint_id, new_sprint_id):
+        instructions = self.get_sprint_instructions(source_sprint_id)
+        with self._get_conn() as conn:
+            for item in instructions:
+                conn.execute("INSERT INTO sprint_instructions VALUES (?,?,?,?,?,?,?,?,?)", (
+                    uuid.uuid4().hex, item['project_id'], new_sprint_id, item['role'], item['message'],
+                    item['status'], item['instruction_id'], item['created_at'], item['applied_at']))
             conn.commit()
 
     def record_sprint(self, sprint: SprintRecord) -> SprintRecord:
@@ -741,6 +817,12 @@ class StateStore:
         resume_from: Optional[str] = None,
     ) -> QueueItem:
         with self._get_conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if source_sprint_id:
+                existing = conn.execute("SELECT queue_id FROM directive_queue WHERE project_id=? AND source_sprint_id=? AND status IN ('QUEUED','RUNNING')",
+                                        (project_id, source_sprint_id)).fetchone()
+                if existing:
+                    return self.get_queue_item(existing[0])
             cur = conn.execute("SELECT MAX(position) FROM directive_queue WHERE project_id = ?", (project_id,))
             row = cur.fetchone()
             max_pos = row[0] if row and row[0] is not None else -1

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import difflib
 import os
 from pathlib import Path
@@ -72,6 +73,7 @@ class WorkspaceSession:
         storage_root: str | None = None,
         session_id: str | None = None,
         reuse_path: str | None = None,
+        expected_manifest_hash: str | None = None,
     ):
         self.original = Path(original).resolve()
         self._dependency_sources: Dict[str, Path] = {}
@@ -80,6 +82,11 @@ class WorkspaceSession:
             if not self.workspace.is_dir():
                 raise ValueError("Sprint checkpoint does not exist")
             self.temp_root = self.workspace.parent
+            manifest = self.load_checkpoint_manifest(self.workspace, expected_manifest_hash)
+            if manifest["original"] != str(self.original):
+                raise ValueError("Checkpoint belongs to a different project workspace")
+            self.original_baseline = manifest["original_baseline"]
+            self.staged_baseline = manifest["staged_baseline"]
             self._discover_dependencies()
         else:
             if storage_root:
@@ -90,11 +97,42 @@ class WorkspaceSession:
             else:
                 self.temp_root = Path(tempfile.mkdtemp(prefix="pm-sprint-"))
             self.workspace = self.temp_root / "workspace"
+            self.original_baseline = snapshot_workspace(self.original)
             self._copy_source()
-        self.original_baseline = snapshot_workspace(self.original)
-        # A resumed checkpoint contains the edits from the failed run, so its
-        # baseline remains the current registered workspace.
-        self.staged_baseline = self.original_baseline if reuse_path else snapshot_workspace(self.workspace)
+            self.staged_baseline = snapshot_workspace(self.workspace)
+            # Keep the initial comparison outside source files. Resuming must
+            # never silently replace this with the current original workspace.
+            manifest_path = self.temp_root / "checkpoint.json"
+            manifest_path.write_text(json.dumps({
+                "version": 1, "original": str(self.original),
+                "original_baseline": self.original_baseline,
+                "staged_baseline": self.staged_baseline,
+            }, sort_keys=True), encoding="utf-8")
+        self.manifest_hash = hashlib.sha256((self.temp_root / "checkpoint.json").read_bytes()).hexdigest()
+
+    @staticmethod
+    def load_checkpoint_manifest(workspace, expected_hash=None):
+        path = Path(workspace).resolve().parent / "checkpoint.json"
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 10 * 1024 * 1024:
+                raise ValueError("Missing or unsafe checkpoint manifest")
+            raw = path.read_bytes()
+            if expected_hash and hashlib.sha256(raw).hexdigest() != expected_hash:
+                raise ValueError("Checkpoint manifest was changed")
+            manifest = json.loads(raw)
+            if not isinstance(manifest, dict) or manifest.get("version") != 1 or not isinstance(manifest.get("original"), str):
+                raise ValueError("Invalid checkpoint manifest")
+            for key in ("original_baseline", "staged_baseline"):
+                values = manifest.get(key)
+                if not isinstance(values, dict):
+                    raise ValueError("Invalid checkpoint baseline")
+                for relative, digest in values.items():
+                    parts = Path(relative).parts if isinstance(relative, str) else ()
+                    if not parts or Path(relative).is_absolute() or ".." in parts or not isinstance(digest, str):
+                        raise ValueError("Unsafe checkpoint baseline entry")
+            return manifest
+        except (OSError, ValueError) as error:
+            raise ValueError("Checkpoint has no trusted initial baseline; inspect or recover its files instead of automatic Resume") from error
 
     def _ignore(self, directory: str, names: list[str]) -> set[str]:
         parent = Path(directory)
@@ -107,6 +145,20 @@ class WorkspaceSession:
 
     def _copy_source(self) -> None:
         shutil.copytree(self.original, self.workspace, symlinks=True, ignore=self._ignore)
+        # Internal absolute links must point at the staged copy, never back at
+        # real project files that a writer could mutate through the alias.
+        for current, dirs, files in os.walk(self.workspace, followlinks=False):
+            for name in dirs + files:
+                staged = Path(current) / name
+                if not staged.is_symlink():
+                    continue
+                original_link = self.original / staged.relative_to(self.workspace)
+                target = original_link.resolve()
+                if not _inside(target, self.original):
+                    raise ValueError('Source symlink escapes project workspace')
+                staged_target = self.workspace / target.relative_to(self.original)
+                staged.unlink()
+                staged.symlink_to(os.path.relpath(staged_target, staged.parent))
         # Record dependency trees but do not expose them to implementation
         # agents. They are mounted only while deterministic checks run.
         for current, dirs, _files in os.walk(self.original, followlinks=False):
@@ -178,10 +230,22 @@ class WorkspaceSession:
                 break
         return "".join(chunks)[:max_chars]
 
-    def commit(self) -> Dict[str, list[str]]:
+    def commit(self, expected_revision=None) -> Dict[str, list[str]]:
+        if expected_revision:
+            actual_revision = hashlib.sha256(json.dumps(snapshot_workspace(self.workspace), sort_keys=True).encode()).hexdigest()
+            if actual_revision != expected_revision:
+                raise RuntimeError('Staged source changed after verification; re-run checks before delivery')
         changes = self.changes()
         paths = flatten_changes(changes)
         current = snapshot_workspace(self.original)
+        for rel in paths:
+            destination = self.original / rel
+            if not _inside(destination, self.original) or any(
+                parent.is_symlink() for parent in destination.parents if parent != self.original and _inside(parent, self.original)
+            ):
+                raise RuntimeError('Unsafe delivery path: ' + rel)
+            if rel not in changes['deleted'] and not _inside(self.workspace / rel, self.workspace):
+                raise RuntimeError('Staged source path escapes workspace: ' + rel)
         conflicts = [path for path in paths if current.get(path) != self.original_baseline.get(path)]
         if conflicts:
             raise RuntimeError("Workspace changed during sprint: " + ", ".join(conflicts[:20]))
@@ -213,7 +277,8 @@ class WorkspaceSession:
                 if destination.exists() or destination.is_symlink():
                     destination.unlink()
                 if source.is_symlink():
-                    destination.symlink_to(os.readlink(source))
+                    original_target = self.original / source.resolve().relative_to(self.workspace)
+                    destination.symlink_to(os.path.relpath(original_target, destination.parent))
                 else:
                     shutil.copy2(source, destination)
         except Exception:

@@ -53,6 +53,7 @@ class SkillManager:
         "devops-engineer": "devops-engineer",
         "devops_engineer": "devops-engineer",
         "security": "security-auditor",
+        "securityauditor": "security-auditor",
         "security-auditor": "security-auditor",
         "security_auditor": "security-auditor",
         "reviewer": "reviewer",
@@ -62,6 +63,7 @@ class SkillManager:
         "systematic-debugger": "systematic-debugger",
         "ml": "ml-data-engineer",
         "mlengineer": "ml-data-engineer",
+        "mldataengineer": "ml-data-engineer",
         "ml-data-engineer": "ml-data-engineer",
         "data-scientist": "ml-data-engineer",
         "data-engineer": "ml-data-engineer",
@@ -481,7 +483,7 @@ class SkillManager:
         prompt_parts.append("RULES OF ENGAGEMENT:")
         prompt_parts.append("1. Apply role and skill methodology only within the execution mode and current user scope.")
         prompt_parts.append("2. Respect the Project Context constraints (do not use conflicting test commands or frameworks).")
-        prompt_parts.append("3. Provide clean, production-grade, tested solutions.")
+        prompt_parts.append("3. Deliver the requested behavior with evidence proportional to the change. Do not imply production readiness or claim tests passed without host evidence.")
         if execution_mode != "implementation":
             prompt_parts.append("MODE LIMIT: Inspect and report only. Do not edit files, invoke terminal/RunCommand, or run tools requiring confirmation. Implementation, test-writing, deployment and test-execution steps in reference playbooks are not authorized in this mode. The orchestrator supplies deterministic check results; never invent command output or claim unrun checks passed. Return assumptions, evidence, risks and next-owner recommendations.")
         else:

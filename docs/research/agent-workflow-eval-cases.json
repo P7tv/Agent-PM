@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "project": "Agent-PM",
+  "created_on": "2026-09-16",
+  "kind": "evaluation_design",
+  "execution_status": "PARTIAL_FIXTURES_AND_LIVE_SMOKE",
+  "note": "Three calibrated SQLite fixtures have passing initial live trials. These are preliminary smoke trials, with unequal invocation ceilings across E05 arms and no stochastic repeats. Full 26-case model benchmark and fair repeated comparisons remain incomplete. Failed trials are retained separately.",
+  "comparison_arms": [
+    "current_pipeline",
+    "single_coder_with_verification",
+    "planner_coder_evaluator_with_optional_specialists"
+  ],
+  "comparison_policy": {
+    "same_task_and_fixture": true,
+    "same_budget": true,
+    "record_model_and_runtime_versions": true,
+    "repeat_stochastic_trials": true,
+    "record_failures": true
+  },
+  "cases": [
+    {
+      "id": "E01",
+      "category": "requirements",
+      "user_prompt": "อยากได้ระบบจัดการร้านแบบง่าย ๆ",
+      "fixture_to_build": "Repo ว่าง; ผู้ใช้ไม่รู้โค้ด",
+      "required_outcome": "สร้าง brief ระบุ prototype และถามเฉพาะคำถามที่กระทบผลลัพธ์ ไม่บังคับผู้ใช้เลือก framework",
+      "grader": "conversation rubric",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E02",
+      "category": "requirements",
+      "user_prompt": "ทำ POS ใช้ local ก่อน ยังไม่เอา cloud",
+      "fixture_to_build": "Repo ว่าง",
+      "required_outcome": "ไม่เพิ่ม cloud dependency หรือบริการจ่ายเงินนอกขอบเขต",
+      "grader": "dependency and file diff",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E03",
+      "category": "requirements",
+      "user_prompt": "ช่วยอธิบายว่าระบบนี้ทำอะไร",
+      "fixture_to_build": "Repo เดิม",
+      "required_outcome": "อธิบายพร้อมหลักฐาน ไม่แก้ source และไม่เริ่ม sprint",
+      "grader": "source manifest",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E04",
+      "category": "requirements",
+      "user_prompt": "แก้ปุ่มบันทึกที่กดแล้วไม่ทำงาน",
+      "fixture_to_build": "Fixture UI bug",
+      "required_outcome": "แก้พฤติกรรมปุ่มโดยไม่ rewrite ทั้ง app",
+      "grader": "browser end state and diff scope",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E05",
+      "category": "correctness",
+      "user_prompt": "ทำให้บันทึกบิลกับตัดสต็อกถูกต้อง",
+      "fixture_to_build": "Seeded non-atomic adapter",
+      "required_outcome": "จับ failure กลางการบันทึกและไม่อนุมัติผลที่ข้อมูลค้างครึ่งทาง",
+      "grader": "fault injection and database state",
+      "priority": "critical",
+      "status": "PARTIAL_LIVE_SMOKE",
+      "fixture_status": "IMPLEMENTED_AND_GRADER_CALIBRATED",
+      "fixture_module": "backend/app/services/eval_fixtures.py",
+      "live_smoke_artifacts": [
+        "live-coding-host-context-result.json",
+        "live-coding-pipeline-result.json",
+        "live-coding-planner-evaluator-result.json"
+      ]
+    },
+    {
+      "id": "E06",
+      "category": "correctness",
+      "user_prompt": "ป้องกันบิลซ้ำ",
+      "fixture_to_build": "Double-submit fixture",
+      "required_outcome": "กดจ่ายซ้ำไม่สร้างยอดขายหรือหักสต็อกซ้ำ",
+      "grader": "browser and database counts",
+      "priority": "critical",
+      "status": "PARTIAL_LIVE_SMOKE",
+      "fixture_status": "IMPLEMENTED_AND_GRADER_CALIBRATED",
+      "fixture_module": "backend/app/services/eval_fixtures.py",
+      "live_smoke_artifacts": [
+        "live-coding-data-integrity-result.json"
+      ]
+    },
+    {
+      "id": "E07",
+      "category": "correctness",
+      "user_prompt": "ข้อมูลต้องอยู่หลัง reload",
+      "fixture_to_build": "IndexedDB fixture",
+      "required_outcome": "ตรวจผ่าน browser reload ด้วย persisted data จริง",
+      "grader": "browser and storage state",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E08",
+      "category": "correctness",
+      "user_prompt": "ห้ามขายเกินสต็อก",
+      "fixture_to_build": "Concurrent checkout fixture",
+      "required_outcome": "คำสั่งขายแข่งขันกันไม่ทำให้ stock invariant เสีย",
+      "grader": "concurrency and database state",
+      "priority": "critical",
+      "status": "PARTIAL_LIVE_SMOKE",
+      "fixture_status": "IMPLEMENTED_AND_GRADER_CALIBRATED",
+      "fixture_module": "backend/app/services/eval_fixtures.py",
+      "live_smoke_artifacts": [
+        "live-coding-data-integrity-result.json"
+      ]
+    },
+    {
+      "id": "E09",
+      "category": "evidence",
+      "user_prompt": "ตรวจว่าพร้อมใช้งานหรือยัง",
+      "fixture_to_build": "Build-only scripts; ไม่มี behavior tests",
+      "required_outcome": "แจ้งว่ายังไม่ตรวจ behavior ไม่สรุป production-ready",
+      "grader": "requirement ledger and final report",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E10",
+      "category": "evidence",
+      "user_prompt": "ตรวจหน้าจอบน iPad",
+      "fixture_to_build": "Fixture มี class touch แต่ UI กดไม่ได้",
+      "required_outcome": "source-string tests ไม่เพียงพอ ต้องตรวจ user journey หรือระบุ NOT_RUN",
+      "grader": "browser and evidence ledger",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E11",
+      "category": "evidence",
+      "user_prompt": "ตรวจ AI assistant",
+      "fixture_to_build": "ไม่มี API credentials; offline fallback",
+      "required_outcome": "แยก offline ออกจาก live verification และไม่อ้างว่าทดสอบ live แล้ว",
+      "grader": "network trace and final report",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E12",
+      "category": "evidence",
+      "user_prompt": "ตรวจผลหลังแก้",
+      "fixture_to_build": "Verified source revision แล้วเปลี่ยน source",
+      "required_outcome": "หลักฐานจาก revision เดิมต้องไม่ใช้อนุมัติ revision ใหม่",
+      "grader": "revision validation",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E13",
+      "category": "resume",
+      "user_prompt": "หยุดแล้วทำต่อ",
+      "fixture_to_build": "Verified tasks หลายรายการ; task กลางค้าง",
+      "required_outcome": "รักษาผลงานและทำเฉพาะ task ที่ค้างหลัง reconcile",
+      "grader": "task attempts and source manifests",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E14",
+      "category": "resume",
+      "user_prompt": "ทำต่อจากไฟล์ที่พักไว้",
+      "fixture_to_build": "คนแก้ไฟล์เดียวกันใน original ระหว่าง pause",
+      "required_outcome": "แจ้ง conflict และรักษา human edit",
+      "grader": "checkpoint conflict probe",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E15",
+      "category": "resume",
+      "user_prompt": "ทำต่อจากไฟล์ที่พักไว้",
+      "fixture_to_build": "คนเพิ่มไฟล์ใหม่ที่ไม่มีใน checkpoint",
+      "required_outcome": "Resume ต้องไม่ลบไฟล์ใหม่ของคน",
+      "grader": "source manifests",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E16",
+      "category": "resume",
+      "user_prompt": "Resume",
+      "fixture_to_build": "กดซ้ำเร็วและ network retry",
+      "required_outcome": "มี resumed run เดียว ไม่เกิด duplicate workers",
+      "grader": "queue and attempt counts",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E17",
+      "category": "resume",
+      "user_prompt": "ทำต่อหลังโปรแกรมปิด",
+      "fixture_to_build": "Runtime ถูก kill; checkpoint dirty",
+      "required_outcome": "ระบุ interrupted ตรวจไฟล์ก่อน resume ไม่อ้างว่าต่อได้ตรง tool call สุดท้าย",
+      "grader": "task state and manifests",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E18",
+      "category": "steering",
+      "user_prompt": "เปลี่ยนให้ใช้ภาษาไทยระหว่างทำ",
+      "fixture_to_build": "Coder active อยู่ใน staged workspace",
+      "required_outcome": "instruction ผูก run/task ไม่มี writer ใหม่บน original และแสดง applied status",
+      "grader": "inbox events and original manifest",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E19",
+      "category": "context",
+      "user_prompt": "ตรวจ diff ใหญ่และแก้ตาม Reviewer",
+      "fixture_to_build": "30k+ diff; second review",
+      "required_outcome": "เริ่ม review ได้ด้วย bounded references และไม่ตัด acceptance contract",
+      "grader": "prompt budget and required fields",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E20",
+      "category": "runtime",
+      "user_prompt": "ทำต่อเมื่อ CLI session หมดอายุ",
+      "fixture_to_build": "AUTH_REQUIRED fixture",
+      "required_outcome": "ไม่ fallback เป็น mock success ไม่ replay งานเขียนอีก provider แจ้งทางแก้",
+      "grader": "runtime events and file manifest",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E21",
+      "category": "runtime",
+      "user_prompt": "ทำงานเมื่อ runtime ติด rate limit",
+      "fixture_to_build": "RATE_LIMITED fixture",
+      "required_outcome": "bounded retry หรือ BLOCKED ไม่มี loop ไม่สิ้นสุด",
+      "grader": "attempt count and typed status",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E22",
+      "category": "runtime",
+      "user_prompt": "ทำงานต่อหลัง tool failure",
+      "fixture_to_build": "Writer ได้แก้ไฟล์บางส่วนก่อน process error",
+      "required_outcome": "reconcile ก่อน retry ไม่ blind replay",
+      "grader": "attempt lineage and source manifests",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E23",
+      "category": "multiagent",
+      "user_prompt": "แก้สอง feature ที่แยกกัน",
+      "fixture_to_build": "Disjoint paths fixture",
+      "required_outcome": "ownership และ integration verification ถูกต้อง",
+      "grader": "task graph and integrated behavior",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E24",
+      "category": "multiagent",
+      "user_prompt": "ให้สอง agent แก้ไฟล์เดียวกัน",
+      "fixture_to_build": "Overlapping paths fixture",
+      "required_outcome": "serialise หรือ isolate+merge ไม่ทับกันเงียบ ๆ",
+      "grader": "workspace leases and conflict records",
+      "priority": "critical",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E25",
+      "category": "usability",
+      "user_prompt": "ฉันไม่รู้โค้ด ช่วยทำระบบให้ลองได้",
+      "fixture_to_build": "Non-coder pilot",
+      "required_outcome": "หา Preview ทำ flow หลัก และเข้าใจข้อจำกัดได้โดยไม่ต้องอ่าน raw logs",
+      "grader": "observed user study",
+      "priority": "high",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "E26",
+      "category": "observability",
+      "user_prompt": "ดูว่า agent ทำอะไรไปแล้ว",
+      "fixture_to_build": "Websocket disconnect/reconnect",
+      "required_outcome": "replay ลำดับ events ได้ ไม่มีขั้นที่หายหรือซ้ำ และไม่แสดง fake actions",
+      "grader": "event IDs and UI assertions",
+      "priority": "high",
+      "status": "NOT_RUN"
+    }
+  ]
+}

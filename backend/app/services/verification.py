@@ -11,6 +11,7 @@ import yaml
 from typing import Any, Dict, List
 
 from app.services.process_runner import run_process
+from app.services.acceptance_evidence import source_revision
 
 
 CONFIG_NAMES = (".agent-pm.yml", ".agent-pm.yaml")
@@ -98,9 +99,9 @@ def _is_read_only_script(script: str) -> bool:
     return not (tokens & blocked) and not any(token.startswith("--watch=") for token in tokens)
 
 
-def detect_verification_commands(workspace: str) -> List[Dict[str, Any]]:
+def detect_verification_commands(workspace: str, trusted_config=None) -> List[Dict[str, Any]]:
     root = Path(workspace).resolve()
-    configured = _configured_checks(root, load_project_config(str(root)))
+    configured = _configured_checks(root, load_project_config(str(root)) if trusted_config is None else trusted_config)
     if configured:
         return configured
     checks: List[Dict[str, Any]] = []
@@ -160,8 +161,9 @@ def detect_test_command(workspace: str):
     return check["args"] if check else None
 
 
-async def verify_workspace(workspace: str) -> Dict[str, Any]:
-    checks = detect_verification_commands(workspace)
+async def verify_workspace(workspace: str, trusted_config=None) -> Dict[str, Any]:
+    revision = source_revision(workspace)
+    checks = detect_verification_commands(workspace, trusted_config)
     if not checks:
         return {
             "status": "NOT_RUN", "exit_code": None, "command": "", "stdout": "",
@@ -199,4 +201,5 @@ async def verify_workspace(workspace: str) -> Dict[str, Any]:
     return {
         "status": status, "exit_code": representative["exit_code"], "command": representative["command"],
         "stdout": summary[-20000:], "stderr": representative["stderr"], "checks": results,
+        "source_revision": revision, "source_unchanged": source_revision(workspace) == revision,
     }

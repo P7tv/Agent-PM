@@ -66,18 +66,37 @@ try {
   sessionId = attached.sessionId;
   await command('Runtime.enable');
   await command('Page.enable');
+  const fixture = { sprint_id: 'recovery-ui-fixture', project_id: project.project_id, directive: 'UI test fixture', status: 'FAILED', started_at: Date.now()/1000, completed_at: Date.now()/1000, checkpoint_path: '/fixture/workspace', execution_plan: { checkpoint_stage: 'REVIEWER', checkpoint_manifest_hash: 'fixture-hash' }, change_evidence: { added: ['app.py', 'tests/test_app.py'], applied_to_project: false }, verification_report: { status: 'PASSED', readiness: 'AUTOMATED_CHECKS_ONLY', acceptance_coverage: [{id: 'AC-1', description: 'Works', status: 'NOT_INDEPENDENTLY_VERIFIED'}] } };
+  await command('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    const originalFetch = window.fetch;
+    window.fetch = (input, options) => String(input).endsWith('/api/projects/${project.project_id}/sprints')
+      ? Promise.resolve(new Response(JSON.stringify([${JSON.stringify(fixture)}]), {status: 200, headers: {'Content-Type': 'application/json'}}))
+      : originalFetch(input, options);
+  })()` });
   await command('Page.navigate', { url: `${base}/#/project/${encodeURIComponent(project.project_id)}/mission-hub` });
   await until(() => evaluate(`Boolean(document.querySelector('section[aria-label="ทำงานต่อจาก checkpoint"]'))`), 'Recovery card missing in Mission Hub');
-  if (!await evaluate(`document.querySelector('section[aria-label="ทำงานต่อจาก checkpoint"]').textContent.includes('30 ไฟล์')`)) throw new Error('Checkpoint file count missing');
+  if (!await evaluate(`document.querySelector('section[aria-label="ทำงานต่อจาก checkpoint"]').textContent.includes('2 ไฟล์')`)) throw new Error('Checkpoint file count missing');
   await evaluate(`(() => {
     const originalFetch = window.fetch;
     window.fetch = (input, options) => String(input).endsWith('/retry')
       ? Promise.resolve(new Response(JSON.stringify({detail: 'Resume test rejection'}), {status: 409, headers: {'Content-Type': 'application/json'}}))
       : originalFetch(input, options);
-    document.querySelector('section[aria-label="ทำงานต่อจาก checkpoint"] button').click();
+    Array.from(document.querySelectorAll('section[aria-label="ทำงานต่อจาก checkpoint"] button')).find(button => button.textContent.includes('Resume')).click();
   })()`);
   await until(() => evaluate(`document.body.textContent.includes('Resume test rejection')`), 'Resume failure feedback missing');
-  if (await evaluate(`document.querySelector('section[aria-label="ทำงานต่อจาก checkpoint"] button').disabled`)) throw new Error('Resume button did not recover after failure');
+  if (await evaluate(`Array.from(document.querySelectorAll('section[aria-label="ทำงานต่อจาก checkpoint"] button')).find(button => button.textContent.includes('Resume')).disabled`)) throw new Error('Resume button did not recover after failure');
+  await evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.fetch = (input, options) => String(input).includes('/preview?sprint_id=')
+      ? Promise.resolve(new Response(JSON.stringify({running: true, scope: 'CHECKPOINT', url: 'http://127.0.0.1:9999'}), {status: 200, headers: {'Content-Type': 'application/json'}}))
+      : originalFetch(input, options);
+    Array.from(document.querySelectorAll('section[aria-label="ทำงานต่อจาก checkpoint"] button')).find(button => button.textContent.includes('ลองไฟล์พักงาน')).click();
+  })()`);
+  await until(() => evaluate(`document.body.textContent.includes('เปิด Preview ของไฟล์พักงาน')`), 'Checkpoint preview scope missing');
+  await command('Page.navigate', { url: `${base}/#/project/${encodeURIComponent(project.project_id)}/sprints-qa` });
+  await until(() => evaluate(`Boolean(document.querySelector('.sprint-detail-toggle-btn'))`), 'Sprint history missing');
+  await evaluate(`document.querySelector('.sprint-detail-toggle-btn').click()`);
+  await until(() => evaluate(`document.body.textContent.includes('ยังไม่ตรวจรับอย่างอิสระ')`), 'Acceptance scope not shown');
   if (errors.length) throw new Error(errors.join('; '));
   console.log('Recovery UI passed: Mission Hub card, file count, Resume failure feedback and retry. Resume request intercepted; no AI calls.');
 } finally {

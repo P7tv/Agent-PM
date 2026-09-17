@@ -45,6 +45,10 @@ class SprintQueue:
         """Restart drain workers for directives that survived a server restart."""
         resumed = 0
         for project in self.store.list_projects():
+            sprints = self.store.get_sprints(project.project_id)
+            latest = max(sprints, key=lambda item: item.started_at) if sprints else None
+            if latest and latest.status in {"PAUSED", "INTERRUPTED"}:
+                continue  # Restart is not permission to resume a paused project.
             if self.store.get_queue(project.project_id):
                 self._ensure_worker(project.project_id)
                 resumed += 1
@@ -56,6 +60,7 @@ class SprintQueue:
             self._workers[project_id] = asyncio.create_task(self._drain(project_id))
 
     async def _drain(self, project_id: str):
+        paused_source = None
         try:
             while True:
                 queue = self.store.get_queue(project_id)
@@ -81,7 +86,7 @@ class SprintQueue:
                     final_status = res.get("status", "COMPLETED") if res else "COMPLETED"
                     if final_status in ["COMPLETED", "SUCCESS"]:
                         self.store.update_queue_item(item.queue_id, "COMPLETED")
-                    elif final_status in ["ABORTED", "REJECTED", "HALTED_QA_FAILURE"]:
+                    elif final_status in ["PAUSED", "ABORTED", "REJECTED", "HALTED_QA_FAILURE"]:
                         self.store.update_queue_item(item.queue_id, "CANCELLED")
                     else:
                         self.store.update_queue_item(item.queue_id, "FAILED")
@@ -97,7 +102,15 @@ class SprintQueue:
                         "error": error,
                     })
                     await self.broadcast_fn("QUEUE_UPDATED", {"project_id": project_id})
+                if final_status == "PAUSED":
+                    paused_source = res.get('sprint_id') if res else None
+                    break  # Do not start another directive while the user paused this project.
         finally:
             current = self._workers.get(project_id)
             if current is asyncio.current_task():
                 self._workers.pop(project_id, None)
+                # A user may explicitly enqueue Resume while the pause-finished
+                # broadcast is in flight. Do not strand that request in the queue.
+                pending = self.store.get_queue(project_id)
+                if paused_source and pending and pending[0].source_sprint_id == paused_source:
+                    self._ensure_worker(project_id)
