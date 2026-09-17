@@ -344,7 +344,7 @@ Legacy checkpoints ที่ไม่มี original manifest ต้องระ
 - checkpoint preview มีปุ่มใน Mission Hub, scope แยกจาก original, หยุด preview ก่อน Resume; subprocess group cleanup
 - call/token budgets, executable local regression eval harness และ report แยกจาก model benchmark
 
-การตรวจล่าสุด: backend suite 229 tests ผ่าน; local workflow regressions 122/122;
+การตรวจล่าสุด: backend suite 232 tests ผ่าน; local workflow regressions 125/125;
 frontend build ผ่าน. รายงาน local
 regression และ browser UI ให้ดูผลการรันที่แนบใน repo ไม่ถือเป็น model benchmark.
 
@@ -402,3 +402,18 @@ host-run checks และ evidence ตาม source revision. Host writer รั
 ตรวจ prompt composition 12 roles และ backend regression 229 tests ผ่าน.
 รอบนี้ไม่ได้เรียกโมเดลจริงซ้ำ; live fixture artifacts ข้างต้นเป็นผลก่อน
 การปรับ playbooks รอบนี้ ไม่ใช่หลักฐานวัดคุณภาพหลังเปลี่ยน prompt.
+
+## Automatic skill retrieval update — 2026-09-17
+
+พบ Auto เลือกเพียง 2 skills ก่อนตัด role playbooks ที่ซ้ำออก จึงโหลด methodology
+จากคลังได้น้อย. แก้ให้ตัด core roles ก่อนจัด slots, ใช้ Thai/English outcome
+terms และ stack/acceptance context, ให้ direct triggers มาก่อน expanded terms
+และลดการเลือกจาก generic words/role affinity เพียงอย่างเดียว. Auto เลือกได้
+สูงสุด 4 operational skills ตามค่า default ภายใต้ excerpt budget เดิม.
+Pinned skills ใช้ร่วมกับ Auto; Add/Assign ไม่เปลี่ยนเป็น Manual โดยอัตโนมัติ.
+Manual ยังใช้เฉพาะ equipped list. มีปุ่มเปิด Auto ทั้งทีมและ catalog ตาม project.
+Prompt Preview แสดง operational skills ที่โหลดจริงพร้อม selection reasons.
+
+ทดสอบ deterministic Thai retrieval, Auto+pins/Manual isolation และ project
+catalog: backend 232 tests และ frontend build ผ่าน. การโหลด MD เข้า prompt
+ไม่ได้ยืนยันว่าโมเดลทำทุกขั้นใน skill; รอบนี้ไม่ได้เรียกโมเดลจริงซ้ำ.

@@ -1092,8 +1092,11 @@ def checkout_project_git_branch(project_id: str, req: GitCheckoutRequest):
     return git_svc.switch_branch(p.workspace_path, req.branch_name)
 
 @router.get("/skills")
-def list_global_skills():
-    skills = skill_manager.list_available_skills()
+def list_global_skills(project_id: Optional[str] = None):
+    project = store.get_project(project_id) if project_id else None
+    if project_id and not project:
+        raise HTTPException(status_code=404, detail='Project not found')
+    skills = skill_manager.list_available_skills(project.workspace_path if project else None)
     return [
         {
             "name": s.name,
@@ -1237,7 +1240,7 @@ def assign_skill_to_agent(project_id: str, role: str, req: AssignSkillRequest):
         skill_tier=skill.tier,
         skill_title=skill.title,
         equipped_skills=equipped,
-        skill_mode="MANUAL"
+        skill_mode=agent.skill_mode
     )
     return {
         "status": "SUCCESS",
@@ -1247,7 +1250,7 @@ def assign_skill_to_agent(project_id: str, role: str, req: AssignSkillRequest):
         "skill_tier": updated_state.skill_tier,
         "skill_title": updated_state.skill_title,
         "equipped_skills": equipped,
-        "skill_mode": "MANUAL"
+        "skill_mode": agent.skill_mode
     }
 
 @router.post("/projects/{project_id}/agents/{role}/skills/add")
@@ -1273,9 +1276,9 @@ def add_agent_skill(project_id: str, role: str, req: SkillAddRequest):
         skill_tier=agent.skill_tier,
         skill_title=agent.skill_title,
         equipped_skills=equipped,
-        skill_mode="MANUAL"
+        skill_mode=agent.skill_mode
     )
-    return {"status": "SUCCESS", "equipped_skills": equipped, "skill_mode": "MANUAL"}
+    return {"status": "SUCCESS", "equipped_skills": equipped, "skill_mode": agent.skill_mode}
 
 @router.post("/projects/{project_id}/agents/{role}/skills/remove")
 def remove_agent_skill(project_id: str, role: str, req: SkillRemoveRequest):

@@ -113,6 +113,22 @@ PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 
 ## Workflow controls and evidence
 
+### Automatic skill selection
+
+In **AUTO**, each substantive task retrieves relevant methodology from the
+installed and current-project skill library. Matching uses Thai/English outcome
+terms and stack/acceptance context. Loaded role playbooks do not consume automatic
+skill slots. The default limit is four operational skills, adjustable with
+`AGENT_AUTO_MAX_SKILLS` (1–6), under the existing prompt/excerpt budget.
+
+Adding a skill preserves the agent's current mode. In AUTO it is pinned alongside
+automatic retrieval; **MANUAL** uses only the equipped list. Existing Manual
+agents stay Manual until changed. Use **เปิด Auto ทั้งทีม** in the Skill Store to
+enable automatic selection for the current team while retaining its pinned list.
+Prompt Preview shows the skills actually loaded, selection reasons, source hashes
+and excerpts. Loading instructions does not prove the model followed every step
+or grant permission to execute a skill's scripts.
+
 - **Pause** stops the active process and preserves partial source. **Resume** inspects unfinished work in the same staged workspace. Completed writers are reused only when the checkpoint revision is unchanged. CLI sessions resume by the exact conversation ID and feature/task key when available; SDK runs reconcile from files.
 - Restarted runs are **INTERRUPTED**. Restart does not approve a pending question or automatically resume a paused project.
 - **ลองไฟล์พักงาน** starts a checkpoint preview using the project's configured `preview` command. This preview is separate from delivered project files. Resume stops a checkpoint preview before continuing.

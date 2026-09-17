@@ -1692,7 +1692,8 @@ export default function FocusRoomView({
                                   </div>)}
                                 </details>}
                                 {promptPreview && <div>
-                                  <p>โหมด: {promptPreview.trace.execution_mode} · {promptPreview.trace.characters.toLocaleString()} ตัวอักษร · Skills ที่เลือก: {promptPreview.trace.selected_skills.join(', ') || 'ไม่มี'}</p>
+                                  <p>โหมด: {promptPreview.trace.execution_mode} · {promptPreview.trace.characters.toLocaleString()} ตัวอักษร · Skills ที่เข้า prompt: {promptPreview.trace.operational_skills.join(', ') || 'ไม่มี skill เพิ่มเติม'}</p>
+                                  {Object.entries(promptPreview.trace.selection_reasons || {}).map(([name, reason]) => <p key={name}>{name}: {reason}</p>)}
                                   {promptPreview.trace.warnings.map(message => <p key={message} role="alert">{message}</p>)}
                                   {promptPreview.trace.truncated_sections.length > 0 && <p>ส่วนที่ใช้ excerpt: {promptPreview.trace.truncated_sections.join(', ')}</p>}
                                   <details><summary>ไฟล์และเวอร์ชันที่โหลด</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(promptPreview.trace.sources, null, 2)}</pre></details>
@@ -1798,7 +1799,7 @@ export default function FocusRoomView({
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <Sparkles size={14} color="var(--primary)" />
-                                    <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>Equipped Capabilities</span>
+                                    <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>{isAuto ? 'Skills ที่ปักไว้ + เลือกจากคลังตามงาน' : 'Skills ที่เลือกเอง'}</span>
                                   </div>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <button

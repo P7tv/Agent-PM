@@ -199,6 +199,34 @@ def test_skill_parser_failure_does_not_crash_discovery_and_thai_triggers_work(tm
         manager.save_custom_skill(str(tmp_path), 'backend-dev', 'x' * 7000)
 
 
+def test_auto_loads_library_methodology_for_thai_request_without_equipping(tmp_path, manager):
+    skill_file(tmp_path, 'transaction-regression', '---\nname: transaction-regression\ndescription: transaction concurrency verification\ntriggers: [transaction, concurrency]\n---\nTRANSACTION_ROLLBACK_METHOD')
+    bundle = build_prompt(manager, 'BackendDev', str(tmp_path), intent='แก้ stock ติดลบเวลาขายพร้อมกัน')
+    assert 'transaction-regression' in bundle.trace['operational_skills']
+    assert 'TRANSACTION_ROLLBACK_METHOD' in bundle.system
+    assert 'backend-dev' not in bundle.trace['operational_skills']
+    assert len(bundle.trace['operational_skills']) <= 4
+
+
+def test_auto_pins_keep_automatic_retrieval_but_manual_remains_exclusive(tmp_path, manager):
+    skill_file(tmp_path, 'inventory-check', '---\nname: inventory-check\ntriggers: [concurrency, transaction]\n---\nINVENTORY_CHECK_METHOD')
+    auto = AgentState(project_id='p', role='BackendDev', skill_mode='AUTO', equipped_skills=['security-auditor'])
+    bundle = build_prompt(manager, 'BackendDev', str(tmp_path), agent=auto, intent='แก้ stock ติดลบเวลาขายพร้อมกัน')
+    assert {'security-auditor', 'inventory-check'} <= set(bundle.trace['operational_skills'])
+    manual = auto.model_copy(update={'skill_mode': 'MANUAL'})
+    bundle = build_prompt(manager, 'BackendDev', str(tmp_path), agent=manual, intent='แก้ stock ติดลบเวลาขายพร้อมกัน')
+    assert bundle.trace['operational_skills'] == ['security-auditor']
+
+
+def test_skill_catalog_includes_current_project_and_rejects_unknown_project(tmp_path, isolated_db):
+    isolated_db.create_project('p', 'Project', str(tmp_path), True)
+    skill_file(tmp_path, 'local-only', '---\nname: local-only\n---\nLocal methodology')
+    client = TestClient(app)
+    assert 'local-only' in {s['name'] for s in client.get('/api/skills?project_id=p').json()}
+    assert 'local-only' not in {s['name'] for s in client.get('/api/skills').json()}
+    assert client.get('/api/skills?project_id=missing').status_code == 404
+
+
 def test_reregister_preserves_explicit_persona(tmp_path, isolated_db):
     from app.services.project_manager import ProjectManager
     pm = ProjectManager(isolated_db)

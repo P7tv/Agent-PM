@@ -263,7 +263,9 @@ class SkillManager:
         role: str,
         task_prompt: str,
         project_path: Optional[str] = None,
-        max_skills: int = 2
+        max_skills: int = 2,
+        excluded_paths=None,
+        excluded_names=None,
     ) -> List[SkillInfo]:
         """
         Intelligently matches the most relevant skills for an agent task based on:
@@ -273,10 +275,16 @@ class SkillManager:
         4. Role domain affinities (weight +2 base boost)
         5. Project-local priority boost (weight +2 for 'project' tier)
         """
+        if max_skills <= 0:
+            return []
         if not task_prompt:
-            return self.get_domain_skills_for_role(role, project_path=project_path)[:max_skills]
+            return [skill for skill in self.get_domain_skills_for_role(role, project_path=project_path)
+                    if skill.file_path not in set(excluded_paths or [])][:max_skills]
 
         all_skills = self.list_available_skills(project_path=project_path)
+        excluded = set(excluded_paths or [])
+        excluded_identifiers = set(excluded_names or [])
+        all_skills = [skill for skill in all_skills if skill.file_path not in excluded and skill.name not in excluded_identifiers]
         if not all_skills:
             return []
 
@@ -297,11 +305,33 @@ class SkillManager:
         role_domains = role_to_domains.get(normalized_role, ["general"])
 
         prompt_lower = task_prompt.lower()
+        original_prompt = prompt_lower
+        original_tokens = set(re.findall(r"[\w-]{2,}", original_prompt))
+        # Expand common user outcomes into library terminology. No model call,
+        # skill execution or external transmission is needed for retrieval.
+        concepts = {
+            'debug debugging bug fix error test regression verification': ['แก้', 'ปัญหา', 'ผิดพลาด', 'ติดลบ', 'ค้าง', 'crash', 'broken', 'bug'],
+            'ui frontend usability accessibility': ['หน้าจอ', 'หน้าเว็บ', 'ปุ่ม', 'ใช้งานง่าย', 'ใช้งานยาก', 'เข้าใจยาก', 'checkout'],
+            'design layout responsive': ['จัดหน้า', 'ดีไซน์', 'มือถือ'],
+            'architecture schema contract plan plans requirements spec': ['ออกแบบระบบ', 'ออกแบบฐานข้อมูล', 'โครงสร้างระบบ', 'วางแผน'],
+            'database transaction concurrency inventory': ['สต็อก', 'stock', 'ฐานข้อมูล', 'ขายพร้อมกัน', 'พร้อมกัน', 'rollback'],
+            'auth security authorization': ['สมาชิก', 'สิทธิ์', 'เข้าสู่ระบบ', 'รหัสผ่าน', 'ล็อกอิน'],
+            'test verification regression': ['ทดสอบ', 'ตรวจผล', 'ตรวจรับ', 'เทส'],
+            'performance optimization': ['ช้า', 'เร็วขึ้น', 'ประสิทธิภาพ', 'optimize'],
+            'plan implementation development': ['สร้าง', 'ทำระบบ', 'ลงมือ', 'implement'],
+            'documentation guide readme': ['คู่มือ', 'เอกสาร', 'วิธีใช้'],
+        }
+        expanded = [terms for terms, cues in concepts.items() if any(cue in prompt_lower for cue in cues)]
+        prompt_lower += ' ' + ' '.join(expanded)
         prompt_tokens = set(re.findall(r"[\w-]{2,}", prompt_lower))
+        prompt_tokens -= {'the', 'and', 'for', 'with', 'this', 'that', 'from', 'use', 'when', 'into',
+                         'you', 'your', 'our', 'are', 'have', 'has', 'will', 'should', 'must', 'please',
+                         'hello', 'hi', 'today', 'standard', 'work', 'task', 'agent'}
 
         scored_skills = []
         for s in all_skills:
             score = 0.0
+            direct_trigger = False
 
             # 1. Triggers match (highest signal)
             triggers = getattr(s, "triggers", []) or []
@@ -309,6 +339,10 @@ class SkillManager:
                 tr_clean = tr.strip().lower()
                 if not tr_clean:
                     continue
+                if (' ' in tr_clean or '-' in tr_clean):
+                    direct_trigger |= tr_clean in original_prompt or tr_clean.replace('-', ' ') in original_prompt
+                else:
+                    direct_trigger |= tr_clean in original_tokens or (not tr_clean.isascii() and tr_clean in original_prompt)
                 if " " in tr_clean or "-" in tr_clean:
                     if tr_clean in prompt_lower or tr_clean.replace("-", " ") in prompt_lower:
                         score += 5.0
@@ -329,6 +363,7 @@ class SkillManager:
                 score += len(common_desc) * 1.5
 
             # 4. Role domain affinity
+            task_score = score
             s_name_desc = (s.name + " " + s.description).lower()
             if any(d in s_name_desc for d in role_domains):
                 score += 2.0
@@ -337,17 +372,19 @@ class SkillManager:
             if s.tier == "project" and score > 0:
                 score += 2.0
 
-            if score > 0:
-                scored_skills.append((score, s))
+            # Role affinity alone should not crowd out task-relevant methodology.
+            if task_score >= 3:
+                scored_skills.append((direct_trigger, score, s))
 
         # Sort by score descending
-        scored_skills.sort(key=lambda x: (-x[0], x[1].name))
+        scored_skills.sort(key=lambda x: (-int(x[0]), -x[1], x[2].name))
 
         if scored_skills:
-            return [s for _, s in scored_skills[:max_skills]]
+            return [s for _, _, s in scored_skills[:max_skills]]
 
         # Fallback to role domain skills if no specific prompt matches
-        return self.get_domain_skills_for_role(role, project_path=project_path)[:max_skills]
+        return [skill for skill in self.get_domain_skills_for_role(role, project_path=project_path)
+                if skill.file_path not in excluded and skill.name not in excluded_identifiers][:max_skills]
 
 
     def synthesize_agent_prompt(

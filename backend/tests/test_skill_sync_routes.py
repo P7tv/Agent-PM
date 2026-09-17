@@ -66,7 +66,7 @@ def test_assign_agent_skill_route():
     assert data["role"] == "TechLead"
     assert data["skill_name"] == "security-auditor"
     assert "security-auditor" in data.get("equipped_skills", [])
-    assert data.get("skill_mode") == "MANUAL"
+    assert data.get("skill_mode") == "AUTO"
 
     # Verify GET /api/projects/{proj_id}/skills returns equipped_skills
     skills_res = client.get(f"/api/projects/{proj_id}/skills")
@@ -75,4 +75,4 @@ def test_assign_agent_skill_route():
     tl_skill = next((a for a in all_ag_skills if a["role"] == "TechLead"), None)
     assert tl_skill is not None
     assert "security-auditor" in tl_skill["equipped_skills"]
-    assert tl_skill["skill_mode"] == "MANUAL"
+    assert tl_skill["skill_mode"] == "AUTO"

@@ -96,8 +96,26 @@ def build_prompt(manager, role, workspace, context=None, agent=None, intent="", 
             except ValueError as error:
                 warnings.append(str(error))
     elif intent.strip() and not re.fullmatch(r"(?:hello|hi|hey|thanks|thank you|สวัสดี(?:ครับ|ค่ะ)?|ขอบคุณ(?:ครับ|ค่ะ)?)[.!\s]*", intent.strip(), re.I):
-        selected = manager.match_skills_for_task(role, intent, workspace, max_skills=2)
-        reasons = {skill.name: "task relevance and role affinity" for skill in selected}
+        for name in getattr(agent, 'equipped_skills', []) or []:
+            try:
+                skill = manager.get_skill(name, workspace, required=True)
+                selected.append(skill)
+                reasons[skill.name] = 'pinned skill; AUTO remains enabled'
+            except ValueError as error:
+                warnings.append(str(error))
+        matching_context = {}
+        for key in ('stack_type', 'frameworks', 'test_runner', 'purpose_summary', 'acceptance_criteria'):
+            if context and context.get(key):
+                matching_context[key] = context[key]
+        match_intent = intent + '\n' + json.dumps(matching_context, ensure_ascii=False)[:4000]
+        excluded_paths = {core.file_path, project.file_path if project else None, *[s.file_path for s in selected]}
+        auto_limit = max(1, min(6, int(os.environ.get('AGENT_AUTO_MAX_SKILLS', '4'))))
+        pinned_count = len({s.file_path for s in selected if s.file_path not in {core.file_path, project.file_path if project else None}})
+        automatic = manager.match_skills_for_task(role, match_intent, workspace,
+            max_skills=max(0, auto_limit - pinned_count), excluded_paths=excluded_paths,
+            excluded_names=set(manager.ROLE_ALIAS_MAP.values()) - {'security-auditor', 'systematic-debugger'})
+        selected.extend(automatic)
+        reasons.update({skill.name: 'AUTO task/context match (Thai/English); excludes loaded core role' for skill in automatic})
     excluded = {core.file_path, project.file_path if project else None}
     active = []
     for skill in selected:

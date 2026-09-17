@@ -51,6 +51,22 @@ export default function SkillStoreModal({
   // Assigning state
   const [assigningSkillName, setAssigningSkillName] = useState(null);
   const [assignSuccessRole, setAssignSuccessRole] = useState(null);
+  const [enablingAuto, setEnablingAuto] = useState(false);
+  const enableTeamAuto = async () => {
+    if (!projectId || enablingAuto) return;
+    setEnablingAuto(true);
+    const results = await Promise.allSettled(agents.map(async agent => {
+      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agent.role)}/skills/set-mode`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'AUTO' })
+      });
+      if (!response.ok) throw new Error(`เปลี่ยนโหมด ${agent.role} ไม่สำเร็จ`);
+    }));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    if (onSkillAssigned) onSkillAssigned();
+    if (failed) toast.error(`เปลี่ยนเป็น Auto ไม่สำเร็จ ${failed} agents กรุณาลองใหม่`);
+    else toast.success('เปิด Auto ทั้งทีมแล้ว ระบบเลือก skill ตามงานพร้อม skill ที่ปักไว้');
+    setEnablingAuto(false);
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -63,7 +79,7 @@ export default function SkillStoreModal({
   const fetchAvailableSkills = async () => {
     setLoadingSkills(true);
     try {
-      const res = await fetch('/api/skills');
+      const res = await fetch(projectId ? `/api/skills?project_id=${encodeURIComponent(projectId)}` : '/api/skills');
       if (res.ok) {
         const data = await res.json();
         setSkills(data);
@@ -228,7 +244,7 @@ export default function SkillStoreModal({
                 Skill Hub & AGY Playbook Store
               </h3>
               <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: 'var(--text-muted, #94a3b8)' }}>
-                Auto-syncs 22+ Antigravity (AGY) playbooks & supports downloading community skills from GitHub
+                Auto เลือก skill ตามงานจากคลังที่ติดตั้ง ไม่จำเป็นต้อง Equip ทุกตัว
               </p>
             </div>
           </div>
@@ -280,6 +296,10 @@ export default function SkillStoreModal({
             <BookOpen size={16} />
             Browse Skills ({skills.length})
           </button>
+          {projectId && agents.length > 0 && <button onClick={enableTeamAuto} disabled={enablingAuto}
+            style={{ color: 'var(--primary-text)', background: 'var(--primary-subtle)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '8px 12px', cursor: 'pointer' }}>
+            {enablingAuto ? 'กำลังเปิด Auto…' : 'เปิด Auto ทั้งทีม'}
+          </button>}
           <button
             onClick={() => setActiveTab('download')}
             style={{
