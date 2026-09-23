@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 import os
 import tempfile
 from app.models.schemas import QueueItem
@@ -83,6 +84,34 @@ async def test_resume_pending_restarts_workers_after_boot():
         assert queue.resume_pending() == 1
         await queue._workers["resume"]
         assert store.get_queue("resume") == []
+
+
+@pytest.mark.asyncio
+async def test_global_project_concurrency_limit_is_enforced(tmp_path):
+    store = StateStore(str(tmp_path / "queue-limit.db"))
+    for project_id in ("one", "two"):
+        workspace = tmp_path / project_id
+        workspace.mkdir()
+        store.create_project(project_id, project_id, str(workspace), True)
+
+    class StubOrchestrator:
+        def __init__(self):
+            self.active = 0
+            self.maximum = 0
+
+        async def execute_pm_directive(self, project_id, directive, **kwargs):
+            self.active += 1
+            self.maximum = max(self.maximum, self.active)
+            await asyncio.sleep(0.03)
+            self.active -= 1
+            return {"status": "COMPLETED"}
+
+    orchestrator = StubOrchestrator()
+    queue = SprintQueue(store, orchestrator, max_concurrent_projects=1)
+    queue.enqueue("one", "First")
+    queue.enqueue("two", "Second")
+    await asyncio.gather(*list(queue._workers.values()))
+    assert orchestrator.maximum == 1
 
 def test_sprint_queue_api_endpoints():
     from fastapi.testclient import TestClient

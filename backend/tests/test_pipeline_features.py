@@ -126,6 +126,39 @@ def test_workspace_sibling_prefix_is_not_treated_as_inside(tmp_path, isolated_db
     assert not (sibling / "changed.txt").exists()
 
 
+def test_apply_change_verifies_stages_and_blocks_protected_paths(tmp_path, isolated_db):
+    workspace = tmp_path / "safe-apply"
+    workspace.mkdir()
+    (workspace / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+    test_file = workspace / "test_project.py"
+    test_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    client = TestClient(app)
+    assert client.post("/api/projects", json={
+        "project_id": "safe-apply", "name": "Safe apply",
+        "workspace_path": str(workspace), "auto_pilot": True,
+    }).status_code == 200
+
+    protected = client.post("/api/projects/safe-apply/apply-change", json={
+        "filepath": ".env", "content": "SECRET=no\n",
+    })
+    assert protected.status_code == 403
+    assert not (workspace / ".env").exists()
+
+    applied = client.post("/api/projects/safe-apply/apply-change", json={
+        "filepath": "feature.py", "content": "READY = True\n",
+    })
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["verification"]["status"] == "PASSED"
+    assert (workspace / "feature.py").read_text(encoding="utf-8") == "READY = True\n"
+
+    test_file.write_text("def test_failure():\n    assert False\n", encoding="utf-8")
+    rejected = client.post("/api/projects/safe-apply/apply-change", json={
+        "filepath": "rejected.py", "content": "SHOULD_NOT_APPLY = True\n",
+    })
+    assert rejected.status_code == 409
+    assert not (workspace / "rejected.py").exists()
+
+
 def test_openapi_operation_ids_are_unique(isolated_db):
     schema = TestClient(app).get("/openapi.json").json()
     operation_ids = [

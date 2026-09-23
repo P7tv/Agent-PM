@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,13 @@ from app.services.verification import verify_workspace, detect_test_command
 from app.services.workspace_inspector import WorkspaceInspector
 from app.services.pipeline_contracts import build_execution_plan, parse_reviewer_verdict
 from app.services.workspace_session import WorkspaceSession
+
+
+def make_directory_link_or_skip(link, target):
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"Directory symlinks are unavailable in this Windows session: {error}")
 
 
 @pytest.mark.asyncio
@@ -74,7 +82,7 @@ async def test_proposals_reject_sibling_prefix_and_symlink(monkeypatch, tmp_path
     sibling = tmp_path / 'app-other'
     workspace.mkdir()
     sibling.mkdir()
-    (workspace / 'linked').symlink_to(sibling, target_is_directory=True)
+    make_directory_link_or_skip(workspace / 'linked', sibling)
     runner = AgentRunner()
     async def emit(*args):
         pass
@@ -92,8 +100,15 @@ async def test_process_timeout_kills_worker(tmp_path):
     with pytest.raises(TimeoutError):
         await run_process(command, str(tmp_path), timeout=0.3)
     pid = int(pid_file.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    if os.name == 'nt':
+        listing = subprocess.run(
+            ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        assert str(pid) not in listing
+    else:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 @pytest.mark.asyncio
@@ -233,7 +248,7 @@ def test_temporary_workspace_allowed_and_system_symlink_rejected(tmp_path):
     inspector = WorkspaceInspector()
     assert inspector.validate_guardrails(str(tmp_path))[0]
     link = tmp_path / 'system-link'
-    link.symlink_to('/dev', target_is_directory=True)
+    make_directory_link_or_skip(link, '/dev')
     assert not inspector.validate_guardrails(str(link))[0]
 
 
@@ -319,7 +334,8 @@ def test_workspace_dependencies_are_mounted_only_for_verification(tmp_path):
     mounted = session.workspace / 'node_modules'
     assert not mounted.exists()
     session.mount_dependencies()
-    assert mounted.is_symlink()
+    assert mounted.exists()
+    assert (mounted / 'tool' / 'index.js').read_text() == 'dependency'
     session.unmount_dependencies()
     assert not mounted.exists()
     session.close()
@@ -397,6 +413,43 @@ async def test_documentation_only_sprint_can_pass_without_test_suite(tmp_path):
     assert result['status'] == 'COMPLETED'
     assert result['selected_roles'] == ['DocWriter', 'QATester', 'Reviewer']
     assert (workspace / 'README.md').read_text() == 'updated\n'
+
+
+@pytest.mark.asyncio
+async def test_hybrid_final_gate_can_reject_staged_changes(tmp_path):
+    store = StateStore(str(tmp_path / 'state.db'))
+    pm = ProjectManager(store)
+    workspace = tmp_path / 'final-gate'
+    workspace.mkdir()
+    (workspace / 'README.md').write_text('old\n', encoding='utf-8')
+    pm.register_project('final-gate', 'Final gate', str(workspace), auto_pilot=False)
+    runner = AgentRunner(use_mock=False)
+    orchestrator = Orchestrator(store, pm, runner)
+    opened = []
+
+    async def fake_dispatch(**kwargs):
+        role = kwargs['role']
+        if role == 'DocWriter':
+            Path(kwargs['workspace_path'], 'README.md').write_text('staged\n', encoding='utf-8')
+        response = (
+            '<review_verdict>{"verdict":"APPROVED","findings":[],"owners":[]}</review_verdict>'
+            if role == 'Reviewer' else 'completed'
+        )
+        return {'status': 'SUCCESS', 'role': role, 'response': response,
+                'tokens_used': 1, 'backend_used': 'test'}
+
+    async def emit(kind, data):
+        if kind == 'DECISION_GATE_OPEN':
+            opened.append(data['gate_type'])
+            decision = 'REJECTED' if data['gate_type'] == 'FINAL_CHANGE_APPROVAL' else 'APPROVED'
+            orchestrator.resolve_gate(data['request_id'], decision)
+
+    runner.dispatch_agent_task = fake_dispatch
+    result = await orchestrator.execute_pm_directive(
+        'final-gate', 'Update README documentation', event_callback=emit)
+    assert result['status'] == 'REJECTED'
+    assert opened == ['PLAN_APPROVAL', 'FINAL_CHANGE_APPROVAL']
+    assert (workspace / 'README.md').read_text(encoding='utf-8') == 'old\n'
 
 
 @pytest.mark.asyncio

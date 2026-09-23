@@ -31,6 +31,7 @@ Agent-PM coordinates coding agents from a product request. It selects relevant r
 4. **🎯 PM Command Desk & Hybrid Controls**:
    - **PM Directive Box**: Enter high-level requests (e.g. *"Add Google OAuth2 and profile dashboard"*).
    - **Auto-Pilot vs Gate Mode**: Toggle between 100% autonomous execution or human-in-the-loop approval checkpoints.
+     - Gate Mode asks once for the plan and again for the verified final diff before staged files are delivered to the project.
    - **Agent Whisper**: Click any agent at their desk to whisper direct constraints mid-sprint without starting over.
      - Instructions are saved to the active sprint and used at the next safe agent step. They do not inject into a running tool call or launch a separate writer in the project folder. Pending instructions block delivery.
    - **Self-Healing Loop**: If the QA tester catches failures, logs are automatically fed back to Dev agents to self-heal and retry (capped at 3 iterations).
@@ -134,6 +135,9 @@ or grant permission to execute a skill's scripts.
 - **ลองไฟล์พักงาน** starts a checkpoint preview using the project's configured `preview` command. This preview is separate from delivered project files. Resume stops a checkpoint preview before continuing.
 - CLI tool steps stream into the activity feed. Recent events replay after page reload; reconnect replays after the last sequence. The journal retains 10,000 events and hides raw tool parameters/outputs. Replay does not reopen old decision dialogs.
 - Runtime selection: `AGENT_RUNTIME=auto` prefers CLI, with SDK when CLI is unavailable. Use `cli` or `sdk` to select explicitly. `AGENT_MODEL` sets the requested CLI model. `/api/runtime/probe` checks local CLI flags/version without an AI request.
+- Project queues run sequentially per project. `MAX_CONCURRENT_PROJECTS` limits simultaneous pipelines across projects and defaults to `2`; registering more projects does not bypass that resource limit.
+- On Windows, verification mounts dependency folders with a directory junction when symlink privileges are unavailable. Timed-out commands terminate their complete process tree.
+- The launcher binds to `127.0.0.1` and the API has no multi-user authentication. Treat Agent-PM as a local developer tool; do not expose it directly to a network without an authenticated reverse proxy and host sandboxing.
 - CLI requests `--sandbox` and `--mode accept-edits` for writers, `plan` for inspectors. Permission requests fail visibly and preserve files; no automatic permission bypass or cross-provider replay. Skill `allowed_tools` remains descriptive; it is not an enforced provider allowlist. Host verification commands run as local subprocesses, so only run trusted projects/checks.
 - `AGENT_CLI_FILE_MODE=host-proposals` is the default host writer for non-interactive CLI use. The host supplies bounded source context and the agent returns JSON proposals; the backend rejects unsafe/duplicate/symlink paths, replacement of omitted existing files and a changed workspace before applying files. `direct` opts into provider file tools, which can require interactive approval. Host proposals support complete file replacements/creation, not deletions, and do not enforce a provider tool allowlist.
 - `SPRINT_MAX_AGENT_CALLS` defaults to 24 and `SPRINT_TOKEN_BUDGET` to 600000. Token usage records identify provider counts versus estimates. The token budget is a stop threshold checked between invocations, not a hard provider limit; one invocation can exceed it. A budget stop preserves the checkpoint.

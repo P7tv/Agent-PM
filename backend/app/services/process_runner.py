@@ -5,6 +5,31 @@ import signal
 import time
 
 
+async def _terminate_process_tree(proc):
+    """Terminate a subprocess and its descendants on every supported OS."""
+    if proc.returncode is not None:
+        return
+    try:
+        if os.name == "nt":
+            # ``proc.kill()`` only terminates the direct child on Windows. AI
+            # CLIs and npm commonly spawn workers, so close the complete tree.
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+            if proc.returncode is None:
+                proc.kill()
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 async def run_process(args, workspace, timeout=600, progress=None, stdout_line=None, max_output_bytes=2_000_000):
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=workspace, stdout=asyncio.subprocess.PIPE,
@@ -28,7 +53,7 @@ async def run_process(args, workspace, timeout=600, progress=None, stdout_line=N
                     pending = bytearray(rest)
                     if len(line) > max_output_bytes:
                         raise ValueError("Runtime event exceeds output limit")
-                    await callback(line.decode("utf-8", errors="replace"))
+                    await callback(line.rstrip(b"\r").decode("utf-8", errors="replace"))
                 if len(pending) > max_output_bytes:
                     raise ValueError("Runtime event exceeds output limit")
         if callback and pending:
@@ -58,13 +83,7 @@ async def run_process(args, workspace, timeout=600, progress=None, stdout_line=N
                 await progress(time.monotonic() - started)
     finally:
         if proc.returncode is None or not communication.done():
-            try:
-                if os.name != "nt":
-                    os.killpg(proc.pid, signal.SIGKILL)
-                else:
-                    proc.kill()
-            except ProcessLookupError:
-                pass
+            await _terminate_process_tree(proc)
             await proc.wait()
             communication.cancel()
             for reader in readers:

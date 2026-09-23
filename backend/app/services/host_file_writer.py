@@ -91,4 +91,4 @@ def apply_file_proposals(text, workspace, baseline, observed_paths=None):
             else:
                 replace(target, *backup)
         raise
-    return [str(target.relative_to(root)) for target in written]
+    return [target.relative_to(root).as_posix() for target in written]

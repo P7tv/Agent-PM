@@ -9,6 +9,13 @@ from app.models.schemas import SprintRecord
 from app.services.workspace_session import WorkspaceSession
 
 
+def symlink_or_skip(link, target, target_is_directory=False):
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as error:
+        pytest.skip(f"Symlinks are unavailable in this Windows session: {error}")
+
+
 def checkpoint(tmp_path):
     original = tmp_path / 'original'
     original.mkdir()
@@ -64,7 +71,7 @@ def test_internal_source_link_cannot_write_original_from_staging(tmp_path):
     original = tmp_path / 'original'
     original.mkdir()
     (original / 'real.txt').write_text('original')
-    (original / 'alias.txt').symlink_to(original / 'real.txt')
+    symlink_or_skip(original / 'alias.txt', original / 'real.txt')
     session = WorkspaceSession(str(original), str(tmp_path / 'runs'), 'links')
     (session.workspace / 'alias.txt').write_text('staged edit')
     assert (original / 'real.txt').read_text() == 'original'
@@ -78,7 +85,7 @@ def test_delivery_rejects_parent_link_added_while_paused(tmp_path):
     (first.workspace / 'new' / 'feature.txt').write_text('agent file')
     outside = tmp_path / 'outside'
     outside.mkdir()
-    (original / 'new').symlink_to(outside, target_is_directory=True)
+    symlink_or_skip(original / 'new', outside, target_is_directory=True)
     resumed = WorkspaceSession(str(original), reuse_path=str(first.workspace), expected_manifest_hash=first.manifest_hash)
     with pytest.raises(RuntimeError, match='Unsafe delivery path'):
         resumed.commit()

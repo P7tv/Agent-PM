@@ -20,9 +20,9 @@ from app.services.tech_lead_service import TechLeadService
 from app.services.git_service import GitService
 from app.services.skill_manager import SkillManager
 from app.services.console_service import ConsoleService, parse_target_role, is_actionable_directive
-from app.services.verification import load_project_config, detect_verification_commands
+from app.services.verification import load_project_config, detect_verification_commands, verify_workspace
+from app.services.workspace_session import WorkspaceSession, flatten_changes
 from app.services.sprint_queue import SprintQueue
-from app.services.workspace_session import WorkspaceSession
 from app.api.websocket_hub import hub
 from app.services.event_journal import EventJournal
 from app.models.schemas import (
@@ -193,9 +193,9 @@ class ConsoleChatRequest(BaseModel):
     is_directive: Optional[bool] = False
 
 class ApplyChangeRequest(BaseModel):
-    filepath: str
-    content: str
-    commit_message: Optional[str] = None
+    filepath: str = Field(min_length=1, max_length=500)
+    content: str = Field(max_length=2 * 1024 * 1024)
+    commit_message: Optional[str] = Field(default=None, max_length=200)
 
 class CreateBacklogItemRequest(BaseModel):
     title: str
@@ -259,7 +259,11 @@ async def probe_runtime():
 
 @router.get("/runtime")
 def get_runtime():
-    return runner.runtime_status()
+    return {
+        **runner.runtime_status(),
+        "max_concurrent_projects": sprint_queue.max_concurrent_projects,
+        "active_project_workers": sum(not task.done() for task in sprint_queue._workers.values()),
+    }
 
 
 @router.get("/projects")
@@ -1493,57 +1497,107 @@ async def console_chat(project_id: str, req: ConsoleChatRequest, bg: BackgroundT
 
 
 @router.post("/projects/{project_id}/apply-change")
-def apply_code_change(project_id: str, req: ApplyChangeRequest):
-    """Apply a code proposal: write file to workspace and create git commit."""
+async def apply_code_change(project_id: str, req: ApplyChangeRequest):
+    """Verify and atomically apply one user-approved code proposal."""
     p = store.get_project(project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Resolve filepath relative to workspace
-    if os.path.isabs(req.filepath):
-        full_path = req.filepath
-    else:
-        full_path = os.path.join(p.workspace_path, req.filepath)
-
-    # Security: ensure file is inside the workspace
-    real_workspace = os.path.realpath(p.workspace_path)
-    real_target = os.path.realpath(full_path)
-    if os.path.commonpath([real_workspace, real_target]) != real_workspace:
-        raise HTTPException(status_code=403, detail="File path must be inside the project workspace")
-
+    root = Path(p.workspace_path).resolve()
+    requested = Path(req.filepath)
+    if requested.is_absolute() or requested.drive or "\x00" in req.filepath:
+        raise HTTPException(status_code=403, detail="File path must be relative to the project workspace")
     try:
-        # Create parent directories if needed
-        os.makedirs(os.path.dirname(real_target), exist_ok=True)
+        target = (root / requested).resolve()
+        relative = target.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=403, detail="File path must be inside the project workspace")
+    if not relative or target.is_dir() or ".git" in Path(relative).parts:
+        raise HTTPException(status_code=403, detail="Git metadata and directories cannot be edited")
 
-        # Write the file
-        with open(real_target, 'w', encoding='utf-8') as f:
-            f.write(req.content)
+    config = load_project_config(str(root))
+    configured = config.get("protected_paths", [])
+    protected = [".git", ".env", "secrets"]
+    if isinstance(configured, list):
+        protected.extend(str(item) for item in configured)
+    candidate = Path(relative)
+    for raw_rule in protected:
+        rule_text = raw_rule.strip().strip("/\\")
+        if not rule_text:
+            continue
+        rule = Path(rule_text)
+        if candidate == rule or rule in candidate.parents:
+            raise HTTPException(status_code=403, detail=f"Protected path cannot be edited: {relative}")
 
-        # Git add + commit
-        commit_msg = req.commit_message or f"Apply code change: {os.path.basename(req.filepath)}"
+    session = None
+    try:
+        session = await asyncio.to_thread(WorkspaceSession, str(root))
+        staged_target = (session.workspace / relative).resolve()
         try:
-            subprocess.run(["git", "add", real_target], cwd=p.workspace_path, capture_output=True, timeout=10)
-            subprocess.run(
-                ["git", "commit", "-m", commit_msg],
-                cwd=p.workspace_path, capture_output=True, timeout=10
-            )
-        except Exception:
-            pass  # Git commit is best-effort
+            staged_target.relative_to(session.workspace.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Symlink target leaves the staged workspace")
+        staged_target.parent.mkdir(parents=True, exist_ok=True)
+        staged_target.write_text(req.content, encoding="utf-8")
 
+        await asyncio.to_thread(session.mount_dependencies)
+        try:
+            verification = await verify_workspace(str(session.workspace))
+        finally:
+            await asyncio.to_thread(session.unmount_dependencies)
+        if verification["status"] in {"FAILED", "ERROR"}:
+            raise HTTPException(status_code=409, detail={
+                "message": "Change was not applied because project verification failed",
+                "verification": verification,
+            })
+
+        changes = await asyncio.to_thread(session.commit, verification.get("source_revision"))
+        changed_files = flatten_changes(changes)
+        git_committed = False
+        git_message = None
+        commit_msg = req.commit_message or f"Apply code change: {Path(relative).name}"
+        if changed_files:
+            try:
+                add_result = await asyncio.to_thread(
+                    subprocess.run, ["git", "add", "--", relative],
+                    cwd=str(root), capture_output=True, text=True, timeout=10,
+                )
+                if add_result.returncode == 0:
+                    commit_result = await asyncio.to_thread(
+                        subprocess.run, ["git", "commit", "-m", commit_msg],
+                        cwd=str(root), capture_output=True, text=True, timeout=10,
+                    )
+                    git_committed = commit_result.returncode == 0
+                    if not git_committed:
+                        git_message = commit_result.stderr.strip() or commit_result.stdout.strip()
+                else:
+                    git_message = add_result.stderr.strip() or add_result.stdout.strip()
+            except (OSError, subprocess.SubprocessError) as error:
+                git_message = str(error)
+
+        action = "Applied and verified" if changed_files else "No changes required"
+        commit_note = " Git commit created." if git_committed else ""
+        if git_message and changed_files:
+            commit_note = f" Git commit was not created: {git_message[:300]}"
         console_svc.add_message(
-            project_id=project_id,
-            sender="system",
-            content=f"✅ Applied code change to `{req.filepath}` and committed.",
-            msg_type="system"
+            project_id=project_id, sender="system",
+            content=f"{action} `{relative}`.{commit_note}", msg_type="system",
         )
-
         return {
-            "status": "APPLIED",
-            "filepath": req.filepath,
-            "full_path": full_path
+            "status": "APPLIED" if changed_files else "NO_CHANGES",
+            "filepath": relative,
+            "changed_files": changed_files,
+            "verification": verification,
+            "git_committed": git_committed,
+            "git_message": git_message,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to apply verified change: {str(e)}")
+    finally:
+        if session is not None:
+            await asyncio.to_thread(session.close, True)
 
 
 @router.post("/projects/{project_id}/run-tests")

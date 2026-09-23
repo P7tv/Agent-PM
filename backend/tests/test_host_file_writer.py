@@ -1,7 +1,15 @@
 import json
+import os
 import pytest
 from app.services.host_file_writer import apply_file_proposals
 from app.services.workspace_session import snapshot_workspace
+
+
+def symlink_or_skip(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"Symlinks are unavailable in this Windows session: {error}")
 
 
 def test_batch_validation_prevents_partial_write_and_rejects_changed_baseline(tmp_path):
@@ -101,14 +109,16 @@ def test_host_writer_applies_files_and_preserves_existing_executable_mode(tmp_pa
         {'path': 'script.py', 'content': 'new'}, {'path': 'nested/new.py', 'content': 'created'}]}),
         tmp_path, snapshot_workspace(tmp_path))
     assert paths == ['script.py', 'nested/new.py']
-    assert target.read_text() == 'new' and target.stat().st_mode & 0o777 == 0o755
+    assert target.read_text() == 'new'
+    if os.name != 'nt':
+        assert target.stat().st_mode & 0o777 == 0o755
     assert (tmp_path / 'nested/new.py').read_text() == 'created'
 
 
 def test_host_writer_rejects_internal_symlink_and_duplicate_targets(tmp_path):
     target = tmp_path / 'app.py'
     target.write_text('original')
-    (tmp_path / 'alias.py').symlink_to(target)
+    symlink_or_skip(tmp_path / 'alias.py', target)
     for paths in [('alias.py',), ('app.py', './app.py')]:
         with pytest.raises(ValueError):
             apply_file_proposals(json.dumps({'files': [{'path': path, 'content': 'new'} for path in paths]}),

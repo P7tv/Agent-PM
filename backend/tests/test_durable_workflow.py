@@ -288,7 +288,11 @@ def test_checkpoint_preview_uses_staged_workspace_and_preserves_original(tmp_pat
     original = tmp_path / 'original'
     original.mkdir()
     (original / 'app.py').write_text('original')
-    (original / '.agent-pm.yml').write_text('preview:\n  command: ["' + sys.executable + '", "-c", "import time; time.sleep(30)"]\n  url: http://127.0.0.1:9999\n')
+    preview_command = json.dumps([sys.executable, '-c', 'import time; time.sleep(30)'])
+    (original / '.agent-pm.yml').write_text(
+        f'preview:\n  command: {preview_command}\n  url: http://127.0.0.1:9999\n',
+        encoding='utf-8',
+    )
     isolated_db.create_project('p', 'Project', str(original), True)
     session = WorkspaceSession(str(original), str(Path(isolated_db.db_path).parent / '.agentpm-runs'), 'paused')
     (session.workspace / 'app.py').write_text('partial')
@@ -301,7 +305,7 @@ def test_checkpoint_preview_uses_staged_workspace_and_preserves_original(tmp_pat
     routes.db_path = isolated_db.db_path
     try:
         started = client.post('/api/projects/p/preview?sprint_id=paused')
-        assert started.status_code == 200
+        assert started.status_code == 200, started.text
         assert started.json()['scope'] == 'CHECKPOINT'
         assert started.json()['workspace'] == str(session.workspace)
         assert client.get('/api/projects/p/preview').json()['sprint_id'] == 'paused'

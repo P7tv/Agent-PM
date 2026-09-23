@@ -7,6 +7,7 @@ import difflib
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 from typing import Dict, Iterable
 
@@ -77,6 +78,7 @@ class WorkspaceSession:
     ):
         self.original = Path(original).resolve()
         self._dependency_sources: Dict[str, Path] = {}
+        self._mounted_dependencies: Dict[str, str] = {}
         if reuse_path:
             self.workspace = Path(reuse_path).resolve()
             if not self.workspace.is_dir():
@@ -189,17 +191,40 @@ class WorkspaceSession:
             target = self.workspace / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             if not target.exists() and not target.is_symlink():
-                target.symlink_to(source, target_is_directory=True)
+                try:
+                    target.symlink_to(source, target_is_directory=True)
+                    self._mounted_dependencies[relative] = "symlink"
+                except OSError:
+                    if os.name != "nt":
+                        raise
+                    # Directory junctions do not require Windows Developer
+                    # Mode/admin rights and are suitable for node_modules and
+                    # virtual environments mounted only during verification.
+                    result = subprocess.run(
+                        ["cmd.exe", "/c", "mklink", "/J", str(target), str(source)],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if result.returncode != 0 or not target.exists():
+                        raise OSError(
+                            f"Unable to mount dependency {relative}: "
+                            f"{result.stderr.strip() or result.stdout.strip()}"
+                        )
+                    self._mounted_dependencies[relative] = "junction"
 
     def unmount_dependencies(self) -> None:
-        for relative, source in self._dependency_sources.items():
+        for relative, mount_type in list(self._mounted_dependencies.items()):
             target = self.workspace / relative
-            if target.is_symlink():
+            if mount_type == "symlink" and target.is_symlink():
                 try:
+                    source = self._dependency_sources[relative]
                     if target.resolve() == source.resolve():
                         target.unlink()
                 except OSError:
                     target.unlink(missing_ok=True)
+            elif mount_type == "junction" and target.exists():
+                # os.rmdir removes the junction itself, never its target.
+                os.rmdir(target)
+            self._mounted_dependencies.pop(relative, None)
 
     def review_diff(self, max_chars: int = 30000) -> str:
         """Create a bounded unified diff for the read-only reviewer."""

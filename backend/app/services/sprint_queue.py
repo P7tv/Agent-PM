@@ -1,14 +1,26 @@
 import asyncio
+import os
 from typing import Optional, Callable, Dict, Any, List
 from app.models.schemas import QueueItem
 from app.services.state_store import StateStore
 from app.services.orchestrator import Orchestrator
 
 class SprintQueue:
-    def __init__(self, store: StateStore, orchestrator: Orchestrator, broadcast_fn: Optional[Callable] = None):
+    def __init__(
+        self, store: StateStore, orchestrator: Orchestrator,
+        broadcast_fn: Optional[Callable] = None,
+        max_concurrent_projects: Optional[int] = None,
+    ):
         self.store = store
         self.orchestrator = orchestrator
         self.broadcast_fn = broadcast_fn
+        configured_limit = max_concurrent_projects
+        if configured_limit is None:
+            configured_limit = int(os.environ.get("MAX_CONCURRENT_PROJECTS", "2"))
+        if configured_limit < 1:
+            raise ValueError("MAX_CONCURRENT_PROJECTS must be at least 1")
+        self.max_concurrent_projects = configured_limit
+        self._capacity = asyncio.Semaphore(configured_limit)
         # Track active drain workers per project: { project_id: asyncio.Task }
         self._workers: Dict[str, asyncio.Task] = {}
 
@@ -74,15 +86,16 @@ class SprintQueue:
                 if self.broadcast_fn:
                     await self.broadcast_fn("QUEUE_ITEM_STARTED", {"project_id": project_id, "queue_id": item.queue_id, "directive": item.directive})
                 try:
-                    res = await self.orchestrator.execute_pm_directive(
-                        project_id=project_id,
-                        directive=item.directive,
-                        event_callback=self.broadcast_fn,
-                        acceptance_criteria=item.acceptance_criteria,
-                        protected_paths=item.protected_paths,
-                        source_sprint_id=item.source_sprint_id,
-                        resume_from=item.resume_from,
-                    )
+                    async with self._capacity:
+                        res = await self.orchestrator.execute_pm_directive(
+                            project_id=project_id,
+                            directive=item.directive,
+                            event_callback=self.broadcast_fn,
+                            acceptance_criteria=item.acceptance_criteria,
+                            protected_paths=item.protected_paths,
+                            source_sprint_id=item.source_sprint_id,
+                            resume_from=item.resume_from,
+                        )
                     final_status = res.get("status", "COMPLETED") if res else "COMPLETED"
                     if final_status in ["COMPLETED", "SUCCESS"]:
                         self.store.update_queue_item(item.queue_id, "COMPLETED")

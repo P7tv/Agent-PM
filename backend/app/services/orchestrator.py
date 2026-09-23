@@ -1351,7 +1351,69 @@ class Orchestrator:
                 ):
                     raise RuntimeError('Acceptance coverage is incomplete, failed, or stale; checkpoint preserved.')
 
-                workspace_changes = await asyncio.to_thread(workspace_session.commit, final_verification.get('source_revision'))
+                # Hybrid mode requires explicit approval of the actual diff,
+                # after all deterministic checks and reviewer repairs, before
+                # anything is copied into the registered project workspace.
+                if not project.auto_pilot:
+                    final_summary = (
+                        f"Final change approval for: {directive}\n\n"
+                        f"Changed files ({len(staged_paths)}):\n"
+                        + ("\n".join(f"- {path}" for path in staged_paths[:200]) or "- no file changes")
+                        + f"\n\nFinal verification: {final_verification['status']}\n"
+                        + f"Reviewer verdict: {verdict['verdict']}\n\n"
+                        + f"Diff preview:\n{reviewer_excerpt(staged_diff, 12000)}"
+                    )
+                    final_approval = self.store.create_approval_request(
+                        project_id=project_id,
+                        gate_type="FINAL_CHANGE_APPROVAL",
+                        summary=final_summary,
+                    )
+                    self._pending_gates[final_approval.request_id] = (
+                        asyncio.Event(), {"decision": "REJECTED"}
+                    )
+                    self._gate_projects[final_approval.request_id] = project_id
+                    await event_callback("DECISION_GATE_OPEN", {
+                        "project_id": project_id,
+                        "request_id": final_approval.request_id,
+                        "gate_type": "FINAL_CHANGE_APPROVAL",
+                        "summary": final_summary,
+                    })
+                    final_decision = await self._wait_for_approval(final_approval.request_id)
+                    self._gate_feedback.pop(final_approval.request_id, None)
+                    await event_callback("DECISION_GATE_RESOLVED", {
+                        "project_id": project_id,
+                        "request_id": final_approval.request_id,
+                        "decision": final_decision,
+                    })
+                    aborted = await check_and_handle_abort()
+                    if aborted:
+                        return aborted
+                    if final_decision != "APPROVED":
+                        self.store.update_sprint(
+                            sprint_id,
+                            status="REJECTED",
+                            completed_at=time.time(),
+                            total_tokens=total_tokens,
+                            backend_used=get_backend(),
+                            tasks_count=tasks_count,
+                            release_summary="PM rejected the final staged changes. Nothing was applied to the project.",
+                        )
+                        await event_callback("PIPELINE_REJECTED", {
+                            "project_id": project_id,
+                            "directive": directive,
+                            "summary": "PM rejected the final staged changes. Nothing was applied to the project.",
+                        })
+                        return {
+                            "status": "REJECTED",
+                            "project_id": project_id,
+                            "directive": directive,
+                            "sprint_id": sprint_id,
+                            "total_tokens": total_tokens,
+                            "backend_used": get_backend(),
+                        }
+
+                workspace_changes = await asyncio.to_thread(
+                    workspace_session.commit, final_verification.get('source_revision'))
                 workspace_committed = True
                 self.store.update_sprint(sprint_id, change_evidence={
                     **workspace_changes, "diff": staged_diff,
